@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>3D Twin Try-On — Uploader & Verifier</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- model-viewer for 3D preview -->
+  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/modern-normalize/modern-normalize.css">
+  <style>
+    :root { --bg:#0c0d10; --panel:#14161a; --muted:#8a8f98; --text:#eef1f5; --accent:#6ea8ff; --ok:#35c28d; --warn:#ffc658; --bad:#ff6b6b; }
+    html, body { height:100%; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji"; }
+    .wrap { max-width:1200px; margin:0 auto; padding:16px; }
+    h1 { font-size:22px; margin:0 0 12px }
+    h2 { font-size:16px; margin:16px 0 8px; color:#d7dbe2 }
+    .grid { display:grid; grid-template-columns: 380px 1fr; gap:16px; }
+    .card { background:var(--panel); border:1px solid #1d2026; border-radius:14px; padding:12px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+    label { color:var(--muted); font-size:12px; }
+    input, select, button, textarea { background:#0f1115; color:var(--text); border:1px solid #21242c; border-radius:10px; padding:8px 10px; }
+    input[type="number"] { width:110px; }
+    button { cursor:pointer; }
+    button.primary { background:#1a2a45; border-color:#284878; }
+    button.primary:hover { background:#203150; }
+    button.success { background:#123b2e; border-color:#1f6b54; }
+    .hint { color:var(--muted); font-size:12px; }
+    .drop { border:1px dashed #2a2e36; background:#0f1115; border-radius:12px; padding:12px; text-align:center; }
+    .thumbs { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-top:10px; }
+    .thumb { position:relative; aspect-ratio:3/4; border-radius:10px; overflow:hidden; border:1px solid #23262e; }
+    .thumb img { width:100%; height:100%; object-fit:cover; }
+    .tag { position:absolute; left:6px; top:6px; background:#0008; padding:2px 6px; border-radius:6px; font-size:11px; }
+    .status-ok { color:var(--ok); }
+    .status-warn { color:var(--warn); }
+    .status-bad { color:var(--bad); }
+    .pill { display:inline-flex; align-items:center; gap:6px; border:1px solid #2a2e36; border-radius:999px; padding:4px 8px; font-size:12px; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .log { width:100%; min-height:150px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .viewer { width:100%; height:520px; border-radius:14px; overflow:hidden; border:1px solid #1d2026; background:#0b0c0f; }
+    .twocol { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .measure-board { position:relative; aspect-ratio:3/4; background:#0f1115; border:1px solid #23262e; border-radius:12px; overflow:hidden; }
+    .measure-board object { width:100%; height:100%; }
+    .handle { position:absolute; width:14px; height:14px; background:#6ea8ff; border:2px solid #fff; border-radius:50%; transform:translate(-50%,-50%); cursor:grab; }
+    .legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .guide { font-size:12px; color:#cfd6e3; }
+    .rightcol { display:flex; flex-direction:column; gap:12px; }
+    .chips { display:flex; gap:6px; flex-wrap:wrap; }
+    .badge { background:#0f1115; border:1px solid #2a2e36; padding:4px 8px; border-radius:999px; font-size:12px;}
+    .ok { color:var(--ok); } .bad { color:var(--bad); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>3D Twin — Photo QA & Generator</h1>
+
+    <div class="grid">
+      <!-- Left: inputs -->
+      <section class="card">
+        <h2>1) Upload Photos (3–12)</h2>
+        <div id="drop" class="drop">
+          Drag & drop images here, or <label style="text-decoration:underline; cursor:pointer;">
+            browse
+            <input id="fileInput" type="file" accept="image/*" multiple style="display:none">
+          </label>
+          <div class="hint">Front, Side, Back—more photos improve seams/coverage.</div>
+        </div>
+        <div id="thumbs" class="thumbs"></div>
+
+        <h2>2) Measurements</h2>
+        <div class="row">
+          <div class="field">
+            <label>Language</label>
+            <select id="lang">
+              <option value="en">English</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+              <option value="tr">Türkçe</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Preset</label>
+            <select id="preset">
+              <option value="neutral">Neutral</option>
+              <option value="male">Male</option>
+              <option value="female">Female</option>
+              <option value="child">Child</option>
+              <option value="baby">Baby</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Pose Mode</label>
+            <select id="poseMode">
+              <option value="auto">Auto pose after bake</option>
+              <option value="neutral">Neutral A-pose</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Premium bake</label>
+            <select id="highDetail">
+              <option value="false">Standard (2K)</option>
+              <option value="true">Premium (4K)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="twocol">
+          <div>
+            <div class="field"><label>Height (cm) *</label><input id="height" type="number" min="30" max="260" placeholder="170" required></div>
+            <div class="row">
+              <div class="field"><label>Chest (cm)</label><input id="chest" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>Waist (cm)</label><input id="waist" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>Hips (cm)</label><input id="hips" type="number" min="0" step="0.1"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Shoulder (cm)</label><input id="shoulder" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>Inseam (cm)</label><input id="inseam" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>Arm length (cm)</label><input id="arm" type="number" min="0" step="0.1"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Foot length (cm)</label><input id="foot_length" type="number" min="0" step="0.1"></div>
+              <div class="field"><label>Foot width (cm)</label><input id="foot_width" type="number" min="0" step="0.1"></div>
+              <div class="field">
+                <label>Foot width category</label>
+                <select id="foot_width_category">
+                  <option value="">—</option>
+                  <option value="narrow">Narrow</option>
+                  <option value="regular" selected>Regular</option>
+                  <option value="wide">Wide</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Body measures board -->
+          <div>
+            <label>Where to measure (draggable guide points)</label>
+            <div id="measureBoard" class="measure-board">
+              <!-- Load your SVG. Put your file at /assets/Body_measures_SVG.svg -->
+              <object id="measureSvg" type="image/svg+xml" data="assets/Body_measures_SVG.svg"></object>
+
+              <!-- Draggable handles (normalized positions, you can add more) -->
+              <div class="handle" data-key="chest"    style="left:50%; top:37%;"></div>
+              <div class="handle" data-key="waist"    style="left:50%; top:47%;"></div>
+              <div class="handle" data-key="hips"     style="left:50%; top:57%;"></div>
+              <div class="handle" data-key="shoulder" style="left:36%; top:33%;"></div>
+              <div class="handle" data-key="inseam"   style="left:53%; top:74%;"></div>
+              <div class="handle" data-key="arm"      style="left:78%; top:39%;"></div>
+              <div class="handle" data-key="foot"     style="left:53%; top:93%;"></div>
+            </div>
+            <div class="legend">
+              <span class="badge">Drag blue dots to see **where** to measure (UI only)</span>
+            </div>
+          </div>
+        </div>
+
+        <h2>3) Actions</h2>
+        <div class="toolbar">
+          <button id="btnVerify" class="primary">Verify Photos</button>
+          <button id="btnGenerate" class="success">Generate Twin</button>
+          <span id="status" class="hint"></span>
+        </div>
+      </section>
+
+      <!-- Right: output / viewer -->
+      <section class="rightcol">
+        <div class="card">
+          <h2>Photo QA</h2>
+          <div id="qaSummary" class="chips"></div>
+          <div id="retakeTips" class="hint" style="margin-top:8px;"></div>
+        </div>
+
+        <div class="card">
+          <h2>3D Preview</h2>
+          <model-viewer id="viewer" class="viewer" camera-controls environment-image="neutral" shadow-intensity="1" exposure="1.0" auto-rotate rotation-per-second="20deg"></model-viewer>
+          <div class="toolbar" style="margin-top:8px;">
+            <button id="btnReset">Reset View</button>
+            <label>Turntable <input type="range" id="turn" min="-180" max="180" value="0"></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Debug / Progress</h2>
+          <textarea id="log" class="log" readonly></textarea>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
