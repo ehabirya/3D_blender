@@ -3,20 +3,9 @@
 Wrapper to run Blender headless and produce a GLB avatar.
 
 - Preprocesses photos with OpenCV (white balance, CLAHE, denoise, unsharp, resize)
-- Supports multiple photos per role (front/side/back); keeps top-2 if provided
-- Calls deform_avatar.py inside Blender, which does projection + FaceMask + bake + export
+- Supports multiple photos per role (front/side/back)
+- Calls deform_avatar.py which does projection + FaceMask + bake + (optional) pose-after-bake
 - Returns base64-encoded GLB + last 4k lines of Blender log
-
-Inputs:
-  run_blender_avatar(
-      preset: "male"|"female"|"neutral"|"child"|"baby",
-      height_m: float,
-      measurements: dict[str, float|None],  # chest/waist/hips/shoulder/inseam/arm (meters)
-      photos: dict[role->b64],              # single best per role (from calibration)
-      tex_res: int = 2048,
-      photos_ranked: dict[role->[b64]] | None = None,  # top-N per role (from calibration)
-      high_detail: bool = False
-  )
 """
 
 from __future__ import annotations
@@ -38,7 +27,6 @@ BASES = {
     "child":   os.path.join(ASSETS_DIR, "base_child.blend"),
     "baby":    os.path.join(ASSETS_DIR, "base_baby.blend"),
 }
-
 REQUIRED_ASSETS = list(BASES.values())
 
 
@@ -131,17 +119,19 @@ def run_blender_avatar(
     photos: Dict[str, Optional[str]],
     tex_res: int = 2048,
     photos_ranked: Optional[Dict[str, List[str]]] = None,  # from calibration["by_role_ranked"]
-    high_detail: bool = False
+    high_detail: bool = False,
+    pose_mode: str = "auto",
+    pose_angles: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """
     Execute Blender → deform_avatar.py and return {"ok": bool, "glb_b64"?, "log"?, "error"?}
+    - pose_mode: "auto" (apply pose after bake), "neutral" (no pose)
+    - pose_angles: dict with angles (deg) if pose_mode=="auto"
     """
-    # Validate assets
     err = _check_assets()
     if err:
         return {"ok": False, "error": err}
 
-    # Pick base .blend
     blend_path = BASES.get(preset.lower(), BASES["neutral"])
     if not os.path.exists(blend_path):
         return {"ok": False, "error": f"Base file for preset '{preset}' not found: {blend_path}"}
@@ -150,7 +140,6 @@ def run_blender_avatar(
     try:
         out_glb = os.path.join(tmpdir, "twin.glb")
 
-        # Build Blender CLI
         cmd = [
             BLENDER, "-b", blend_path, "--python", DEFORM_SCRIPT, "--",
             "--preset", preset, "--height", str(height_m),
@@ -159,56 +148,55 @@ def run_blender_avatar(
         if high_detail:
             cmd += ["--highDetail"]
 
-        # Measurements (already normalized to meters by calibration)
+        # --- pose JSON when requested ---
+        pose_json_path = None
+        if (pose_mode or "auto").lower() == "auto" and pose_angles:
+            import json
+            pose_json_path = os.path.join(tmpdir, "pose.json")
+            with open(pose_json_path, "w") as f:
+                json.dump(pose_angles, f)
+            cmd += ["--poseJson", pose_json_path]
+
+        # measurements
         for k in ("chest", "waist", "hips", "shoulder", "inseam", "arm"):
             v = (measurements or {}).get(k)
             if v is not None:
                 cmd += [f"--{k}", str(float(v))]
 
-        # Build per-role photo lists (prefer ranked top-2; else fallback to single chosen)
+        # photos
         def pick_list(role: str) -> List[str]:
             if photos_ranked and (lst := photos_ranked.get(role)):
                 return lst[:2]
-            b = (photos or {}).get(role)
-            return [b] if b else []
+            b64 = (photos or {}).get(role)
+            return [b64] if b64 else []
 
-        front_list = pick_list("front")
-        side_list  = pick_list("side")
-        back_list  = pick_list("back")
+        front_paths = _prep_many(pick_list("front"), tmpdir, "front", tex_res)
+        side_paths  = _prep_many(pick_list("side"),  tmpdir, "side",  tex_res)
+        back_paths  = _prep_many(pick_list("back"),  tmpdir, "back",  tex_res)
 
-        # Preprocess → PNGs
-        front_paths = _prep_many(front_list, tmpdir, "front", tex_res)
-        side_paths  = _prep_many(side_list,  tmpdir, "side",  tex_res)
-        back_paths  = _prep_many(back_list,  tmpdir, "back",  tex_res)
-
-        # Prefer list args; also pass single args for backward-compat if list empty
         def join_or_empty(lst): return ";".join(lst) if lst else ""
-
         if front_paths: cmd += ["--frontTexList", join_or_empty(front_paths)]
         if side_paths:  cmd += ["--sideTexList",  join_or_empty(side_paths)]
         if back_paths:  cmd += ["--backTexList",  join_or_empty(back_paths)]
 
-        if not front_paths and photos.get("front"):
+        # back-compat single flags
+        if not front_paths and (photos or {}).get("front"):
             f1 = _prep_many([photos["front"]], tmpdir, "front_single", tex_res)
             if f1: cmd += ["--frontTex", f1[0]]
-        if not side_paths and photos.get("side"):
+        if not side_paths and (photos or {}).get("side"):
             s1 = _prep_many([photos["side"]], tmpdir, "side_single", tex_res)
             if s1: cmd += ["--sideTex", s1[0]]
-        if not back_paths and photos.get("back"):
+        if not back_paths and (photos or {}).get("back"):
             b1 = _prep_many([photos["back"]], tmpdir, "back_single", tex_res)
             if b1: cmd += ["--backTex", b1[0]]
 
-        # Run Blender
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         log_tail = proc.stdout[-4000:] if proc.stdout else ""
         if proc.returncode != 0 or not os.path.exists(out_glb):
             return {"ok": False, "error": "Blender failed", "log": log_tail}
 
-        # Read GLB → base64
         with open(out_glb, "rb") as f:
             glb_b64 = base64.b64encode(f.read()).decode("utf-8")
-
         return {"ok": True, "glb_b64": glb_b64, "log": log_tail}
-
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
