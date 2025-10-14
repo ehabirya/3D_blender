@@ -1,17 +1,26 @@
 # app/calibration.py
 """
-Calibration module
-- Height mandatory; other measurements optional (used for camera/pose sanity + downstream fit)
-- Analyzes uploaded photos using shared vision.py (Pose + FaceMesh, CPU-only)
-- Quality gates photos and produces localized retake tips (EN/ES/DE/TR/FR)
-- Reports which role (front/side/back) passed/failed and why
-- Chooses best front/side/back candidate for downstream Blender step
+Calibration module (FINAL)
+- Height mandatory; other measurements optional (cm or m → meters).
+- Uses shared vision.py (MediaPipe Pose + FaceMesh) to analyze photos on CPU.
+- Quality-gates each photo (blur/tilt/shoulders/yaw) and localizes retake tips.
+- Supports many photos: returns top-N ranked per role (front/side/back).
+- Builds role_report: which role is ok/retry/missing, with reasons + tips.
+- Outputs chosen_by_role + by_role_ranked (for Blender multi-photo blending).
+
+Expected input (example):
+{
+  "height": 175,
+  "photos": { "unordered": ["<b64>", "<b64>", "<b64>", ...] }  // or explicit front/side/back
+  "lang": "de" | "es" | "fr" | "tr" | "en" | "de-DE" | ...     // optional
+  ... optional measurements: chest/waist/hips/shoulder/inseam/arm (cm or m)
+}
 """
 
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
 
-# Shared vision utils (make sure app/vision.py exists)
+# Shared vision utilities (ensure app/vision.py exists)
 from vision import (
     b64_to_img, analyze_one, quality_ok, choose_roles, DEFAULT_THRESHOLDS
 )
@@ -31,7 +40,7 @@ def _to_float(x) -> Optional[float]:
 def _cm_to_m(v: Optional[float]) -> Optional[float]:
     if v is None:
         return None
-    # meters if <=3; else cm→m
+    # meters if <=3; else treat as cm
     return v if v <= 3.0 else v / 100.0
 
 
@@ -157,7 +166,7 @@ def tips_for_rejected_localized(entry: dict, lang: str) -> list[str]:
 
 
 # =========================
-# Role reporting helpers
+# Role helpers + ranking
 # =========================
 
 def _collect_role_labels(photos_dict) -> list[str | None]:
@@ -244,6 +253,32 @@ def _build_role_report(roles=("front","side","back"),
         }
     return report
 
+def topk_by_role(analyses: List[Dict[str, Any]], photos_b64: List[str], k: int = 2) -> Dict[str, List[str]]:
+    """
+    Rank photos per role (front/side/back) by quality:
+     - quality score = focus * (1 + 0.4 * shoulder_len_ratio)
+     - for front: prefer smaller abs_yaw; for side: prefer larger; back: prefer smaller (proxy)
+    Returns {"front":[b64,...], "side":[...], "back":[...]}
+    """
+    scored = []
+    for idx, a in enumerate(analyses):
+        q = (a.get("focus", 0.0) * (1.0 + 0.4 * a.get("shoulder_len_ratio", 0.0)))
+        scored.append((idx, a.get("role", "unknown"), q, a.get("abs_yaw", 9.0)))
+    result = {"front": [], "side": [], "back": []}
+    for role in ("front", "side", "back"):
+        cands = [(i, q, yaw) for (i, r, q, yaw) in scored if r == role]
+        if not cands:
+            cands = [(i, q, yaw) for (i, r, q, yaw) in scored]  # fallback: any
+        if role == "front":
+            cands.sort(key=lambda t: (-t[1], t[2]))      # high q, low yaw
+        elif role == "side":
+            cands.sort(key=lambda t: (-t[1], -t[2]))     # high q, HIGH yaw
+        else:
+            cands.sort(key=lambda t: (-t[1], t[2]))      # high q, low yaw
+        picked = [photos_b64[i] for (i, _, _) in cands[:k] if 0 <= i < len(photos_b64)]
+        result[role] = picked
+    return result
+
 
 # =========================
 # Main API
@@ -256,10 +291,9 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
       - optional measurements normalized
       - analyze all photos via vision.py
       - apply quality thresholds → accepted/rejected with reasons + localized tips
-      - choose best front/side/back even if none accepted (so pipeline can still proceed)
-      - build role_report to show which role failed and why
+      - choose best front/side/back even if none accepted
+      - build role_report + by_role_ranked (top-N per role) for multi-photo projection
     """
-    # Resolve language once
     lang = resolve_lang(data)
 
     # 1) Height (required)
@@ -311,6 +345,7 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
             "accepted": [],
             "rejected": [],
             "chosen_by_role": {"front": None, "side": None, "back": None},
+            "by_role_ranked": {"front": [], "side": [], "back": []},
             "retake_tips": [],
             "role_report": {
                 "front": {"status":"missing","chosen_index":None,"provided_indices":[],"failed_indices":[],"reasons":[],"tips":[]},
@@ -320,7 +355,7 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
         })
         return out
 
-    # Keep maps for role reporting
+    # Keep maps for reporting
     index_to_b64 = {i: b for i, b in enumerate(b64_list)}
     provided_labels = _collect_role_labels(photos)
 
@@ -333,10 +368,11 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
             continue
         analyses.append(analyze_one(img, height_m))
 
-    # 5) Quality gate with shared thresholds
+    # 5) Quality gate (role-aware if explicit labels exist)
     accepted, rejected = [], []
     for idx, (b64, a) in enumerate(zip(b64_list, analyses)):
-        role_hint = None  # if you want: set to provided_labels[idx] when explicit roles are given
+        # if user labeled this index as front/side/back, use as hint
+        role_hint = provided_labels[idx] if idx < len(provided_labels) else None
         ok, reasons = quality_ok(a, role_hint)
         entry = {"index": idx, "role_pred": a.get("role"), "reasons": reasons, "analysis": a}
         if ok:
@@ -345,21 +381,28 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
             entry["tips"] = tips_for_rejected_localized(entry, lang)
             rejected.append(entry)
 
-    # 6) Choose best front/side/back
+    # 6) Choose best per role (single) for compatibility
     if accepted:
         chosen = choose_roles([a["analysis"] for a in accepted],
                               [b64_list[e["index"]] for e in accepted])["by_role"]
+        rank_src_analyses = [a["analysis"] for a in accepted]
+        rank_src_b64s     = [b64_list[e["index"]] for e in accepted]
     else:
         chosen = choose_roles(analyses, b64_list)["by_role"]
+        rank_src_analyses = analyses
+        rank_src_b64s     = b64_list
 
-    # 7) Dedup global retake tips
+    # 7) Build ranked top-N per role (for multi-photo projection)
+    by_role_ranked = topk_by_role(rank_src_analyses, rank_src_b64s, k=2)
+
+    # 8) Dedup global retake tips
     retake_tips: List[str] = []
     for r in rejected:
         for tip in r.get("tips", []):
             if tip not in retake_tips:
                 retake_tips.append(tip)
 
-    # 8) Role report (which role failed & why)
+    # 9) Role report
     role_report = _build_role_report(
         roles=("front","side","back"),
         chosen_by_role=chosen,
@@ -373,7 +416,8 @@ def calibrate_input(data: Dict[str, Any]) -> Dict[str, Any]:
     out.update({
         "accepted": accepted,
         "rejected": rejected,
-        "chosen_by_role": chosen,
+        "chosen_by_role": chosen,         # single best per role
+        "by_role_ranked": by_role_ranked, # top-N per role for Blender blending
         "retake_tips": retake_tips,
         "role_report": role_report
     })
