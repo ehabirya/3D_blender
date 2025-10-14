@@ -1,0 +1,51 @@
+# VCS & IDE
+.git
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+.coverage
+htmlcov/
+
+# Node/web (if present)
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local data / runs / logs
+logs/
+*.log
+tmp/
+cache/
+data/
+outputs/
+runs/
+
+# Large binaries created during tests
+*.glb
+*.gltf
+*.blend1
+*.blend@
+*.zip
+*.tar
+*.tar.gz
+
+# Keep base assets, but ignore generated/temporary ones
+app/assets/tmp/
+app/assets/cache/
+!app/assets/*.blend
