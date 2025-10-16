@@ -480,8 +480,10 @@ print("\n" + "=" * 80)
 print("[DEFORM] Starting texture baking...")
 print("=" * 80)
 
-bpy.context.view_layer.objects.active = obj
+# CRITICAL FIX: Deselect everything first, then select ONLY the mesh
+bpy.ops.object.select_all(action='DESELECT')
 obj.select_set(True)
+bpy.context.view_layer.objects.active = obj
 
 # Determine texture resolution
 tex_res = args.texRes if not args.highDetail else max(args.texRes, 4096)
