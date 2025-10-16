@@ -1,6 +1,13 @@
-# app/blender_avatar.py
+# app/blender_avatar.py - IMPROVED VERSION WITH CRITICAL FIXES
 """
 Wrapper to run Blender headless and produce a GLB avatar.
+
+IMPROVEMENTS IN THIS VERSION:
+- Added timeout to Blender subprocess (300s)
+- Added GLB file size validation (< 7MB)
+- Improved error messages with exit codes
+- Added Blender binary path validation
+- Better logging
 
 - Preprocesses photos with OpenCV (white balance, CLAHE, denoise, unsharp, resize)
 - Supports multiple photos per role (front/side/back)
@@ -20,6 +27,11 @@ BLENDER = os.environ.get("BLENDER_BIN", "/blender/blender")
 DEFORM_SCRIPT = "/app/deform_avatar.py"
 ASSETS_DIR = "/app/assets"
 
+# Validate Blender binary path at import time
+if not os.path.exists(BLENDER):
+    print(f"[WARNING] Blender binary not found at {BLENDER}", file=sys.stderr)
+    print(f"[WARNING] Set BLENDER_BIN environment variable", file=sys.stderr)
+
 BASES = {
     "male":    os.path.join(ASSETS_DIR, "base_male.blend"),
     "female":  os.path.join(ASSETS_DIR, "base_female.blend"),
@@ -28,6 +40,10 @@ BASES = {
     "baby":    os.path.join(ASSETS_DIR, "base_baby.blend"),
 }
 REQUIRED_ASSETS = list(BASES.values())
+
+# Configuration constants
+MAX_GLB_SIZE_BYTES = 7_000_000  # 7 MB (base64 adds ~33% overhead)
+BLENDER_TIMEOUT_SECONDS = 300   # 5 minutes
 
 
 # ---------------- OpenCV helpers ----------------
@@ -73,11 +89,15 @@ def preprocess_and_save(b64_img: str, out_path: str, max_side: int) -> str:
     img = _b64_to_np(b64_img)
     if img is None:
         raise ValueError("Failed to decode image")
+    
+    # IMPROVEMENT: Resize first to reduce memory footprint for large images
+    img = _resize_max(img, max_side)
+    
     img = _gray_world_white_balance(img)
     img = _clahe_contrast(img)
     img = _denoise(img)
     img = _unsharp(img, radius=2.5, amount=0.5)
-    img = _resize_max(img, max_side)
+    
     ok = cv2.imwrite(out_path, img, [cv2.IMWRITE_PNG_COMPRESSION, 3])
     if not ok:
         raise RuntimeError(f"Could not write preprocessed image to {out_path}")
@@ -118,16 +138,36 @@ def run_blender_avatar(
     measurements: Dict[str, Optional[float]] | None,
     photos: Dict[str, Optional[str]],
     tex_res: int = 2048,
-    photos_ranked: Optional[Dict[str, List[str]]] = None,  # from calibration["by_role_ranked"]
+    photos_ranked: Optional[Dict[str, List[str]]] = None,
     high_detail: bool = False,
     pose_mode: str = "auto",
     pose_angles: Optional[Dict[str, float]] = None
 ) -> Dict[str, Any]:
     """
     Execute Blender → deform_avatar.py and return {"ok": bool, "glb_b64"?, "log"?, "error"?}
-    - pose_mode: "auto" (apply pose after bake), "neutral" (no pose)
-    - pose_angles: dict with angles (deg) if pose_mode=="auto"
+    
+    IMPROVEMENTS:
+    - Timeout added (300s)
+    - File size validation (< 7 MB)
+    - Better error messages with exit codes
+    - Enhanced logging
+    
+    Args:
+        preset: Model preset (male/female/neutral/child/baby)
+        height_m: Height in meters
+        measurements: Optional body measurements dict
+        photos: Dict of base64 image strings by role
+        tex_res: Texture resolution (default 2048)
+        photos_ranked: Ranked photos by role from calibration
+        high_detail: Force high detail mode (>=4K)
+        pose_mode: "auto" (apply pose after bake), "neutral" (no pose)
+        pose_angles: Dict with pose angles (deg) if pose_mode=="auto"
+    
+    Returns:
+        Dict with ok, glb_b64 (if success), error, log
     """
+    print(f"[BLENDER] Starting avatar generation: preset={preset}, height={height_m}m, texRes={tex_res}")
+    
     err = _check_assets()
     if err:
         return {"ok": False, "error": err}
@@ -156,6 +196,7 @@ def run_blender_avatar(
             with open(pose_json_path, "w") as f:
                 json.dump(pose_angles, f)
             cmd += ["--poseJson", pose_json_path]
+            print(f"[BLENDER] Pose mode enabled with angles: {pose_angles}")
 
         # measurements
         for k in ("chest", "waist", "hips", "shoulder", "inseam", "arm"):
@@ -190,13 +231,71 @@ def run_blender_avatar(
             b1 = _prep_many([photos["back"]], tmpdir, "back_single", tex_res)
             if b1: cmd += ["--backTex", b1[0]]
 
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        print(f"[BLENDER] Executing command: {' '.join(cmd[:5])}... (truncated)")
+        print(f"[BLENDER] Timeout set to {BLENDER_TIMEOUT_SECONDS}s")
+        
+        # IMPROVEMENT: Add timeout to prevent hanging
+        try:
+            proc = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True,
+                timeout=BLENDER_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired as e:
+            print(f"[BLENDER] Process timed out after {BLENDER_TIMEOUT_SECONDS}s", file=sys.stderr)
+            return {
+                "ok": False, 
+                "error": f"Blender rendering timed out after {BLENDER_TIMEOUT_SECONDS} seconds",
+                "log": "Process killed due to timeout. Try reducing texRes or simplifying the model."
+            }
+        
         log_tail = proc.stdout[-4000:] if proc.stdout else ""
-        if proc.returncode != 0 or not os.path.exists(out_glb):
-            return {"ok": False, "error": "Blender failed", "log": log_tail}
-
+        
+        # IMPROVEMENT: Better error messages with exit codes
+        if proc.returncode != 0:
+            print(f"[BLENDER] Process failed with exit code {proc.returncode}", file=sys.stderr)
+            return {
+                "ok": False, 
+                "error": f"Blender process failed with exit code {proc.returncode}. Check log for details.",
+                "log": log_tail
+            }
+        
+        if not os.path.exists(out_glb):
+            print(f"[BLENDER] Output file not found at {out_glb}", file=sys.stderr)
+            return {
+                "ok": False, 
+                "error": f"Blender completed successfully but output file not found at {out_glb}",
+                "log": log_tail
+            }
+        
+        # IMPROVEMENT: Check file size before encoding
+        glb_size = os.path.getsize(out_glb)
+        print(f"[BLENDER] Generated GLB size: {glb_size / 1e6:.2f} MB")
+        
+        if glb_size > MAX_GLB_SIZE_BYTES:
+            print(f"[BLENDER] Output file too large: {glb_size} bytes", file=sys.stderr)
+            return {
+                "ok": False,
+                "error": f"Output file too large ({glb_size / 1e6:.1f} MB, max {MAX_GLB_SIZE_BYTES / 1e6:.1f} MB). Try lower texRes (current: {tex_res}).",
+                "log": log_tail
+            }
+        
         with open(out_glb, "rb") as f:
             glb_b64 = base64.b64encode(f.read()).decode("utf-8")
+        
+        print(f"[BLENDER] Success! Base64 length: {len(glb_b64)} chars")
         return {"ok": True, "glb_b64": glb_b64, "log": log_tail}
+        
+    except Exception as e:
+        print(f"[BLENDER] Unexpected error: {e}", file=sys.stderr)
+        import traceback
+        return {
+            "ok": False, 
+            "error": f"Unexpected error: {str(e)}", 
+            "log": traceback.format_exc()
+        }
     finally:
+        # Always cleanup temp files
         shutil.rmtree(tmpdir, ignore_errors=True)
