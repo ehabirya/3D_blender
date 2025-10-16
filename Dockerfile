@@ -1,5 +1,5 @@
 # =========================
-# Blender + Python (CPU) image
+# Blender + Python (CPU) images
 # =========================
 FROM python:3.10-slim AS runtime
 
