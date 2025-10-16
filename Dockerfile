@@ -38,14 +38,15 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy application code (expects /app/{*.py, assets/})
-COPY app /app
+# Copy application code (all Python files and assets from root directory)
+COPY *.py /app/
+COPY assets /app/assets
 
-# Ensure assets dir exists (you’ll commit your base_*.blend into this)
+# Ensure assets dir exists (you'll commit your base_*.blend into this)
 RUN mkdir -p /app/assets
 
 # ---- Healthcheck script ----
-COPY app/healthcheck.py /app/healthcheck.py
+COPY healthcheck.py /app/healthcheck.py
 RUN chmod +x /app/healthcheck.py
 
 # ---- Non-root user (safer in serverless) ----
