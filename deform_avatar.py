@@ -1,7 +1,8 @@
 # app/deform_avatar.py — FINAL (multi-photo + FaceMask + 4K + pose-after-bake)
-import bpy, os, sys, argparse, math, json
+import bpy, os, sys, argparse, math, json, time
 import numpy as np
 
+# -------------------------- CLI --------------------------
 parser = argparse.ArgumentParser()
 parser.add_argument("--preset", type=str, default="neutral")
 parser.add_argument("--height", type=float, required=True)
@@ -24,7 +25,12 @@ parser.add_argument("--out", type=str, default="/tmp/avatar.glb")
 parser.add_argument("--make_bases", action="store_true")
 args, _ = parser.parse_known_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 
-# Optional: generate placeholder bases
+# -------------------- Output path plumbing --------------------
+# Prefer explicit absolute path injected from the runner via env.
+OUTPUT_GLTF = os.environ.get("OUTPUT_GLTF", args.out or "/tmp/avatar.glb")
+os.makedirs(os.path.dirname(OUTPUT_GLTF), exist_ok=True)
+
+# -------------------------- Optional: base .blend generator --------------------------
 if args.make_bases:
     base_dir = "/app/assets"
     os.makedirs(base_dir, exist_ok=True)
@@ -38,7 +44,7 @@ if args.make_bases:
     print("Base .blend files created.")
     sys.exit(0)
 
-# ---- helpers ----
+# -------------------------- Helpers --------------------------
 def _main_mesh():
     ms = [o for o in bpy.data.objects if o.type == "MESH"]
     if not ms:
@@ -47,11 +53,16 @@ def _main_mesh():
     return ms[0]
 
 def _ensure_uv(obj):
-    bpy.ops.object.mode_set(mode='OBJECT')
-    if not obj.data.uv_layers:
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.uv.smart_project(angle_limit=66)
+    try:
         bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception:
+        pass
+    if not obj.data.uv_layers:
+        try:
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.uv.smart_project(angle_limit=66)
+        finally:
+            bpy.ops.object.mode_set(mode='OBJECT')
 
 def _load_img_node(nodes, links, path):
     if not path or not os.path.exists(path): return None
@@ -162,12 +173,12 @@ def apply_pose_from_angles(arm, angles: dict):
     rot_deg("head",       "Z",   angles.get("head_yaw"))
     bpy.ops.object.mode_set(mode='OBJECT')
 
-# ---- scene & model ----
+# -------------------------- Scene & model --------------------------
 obj = _main_mesh(); obj.name = "Avatar"
 bpy.context.view_layer.objects.active = obj
 _set_simple_shape(obj); _ensure_uv(obj)
 
-# ---- material & nodes ----
+# -------------------------- Material & nodes --------------------------
 mat_name = "AvatarProjection"
 mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
 mat.use_nodes = True
@@ -180,9 +191,6 @@ links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 
 frontN = _load_img_node(nodes, links, args.frontTex)
 sideN  = _load_img_node(nodes, links, args.sideTex)
-# Continuation from line 183 onwards - FIXED VERSION
-# This file contains only the missing/fixed portion starting from line 183
-
 backN  = _load_img_node(nodes, links, args.backTex)
 
 # ---- multi-photo lists (prioritize over single) ----
@@ -235,7 +243,7 @@ if not obj.data.materials:
 else:
     obj.data.materials[0] = mat
 
-# ---- bake textures (in neutral A-pose) ----
+# -------------------------- Bake (neutral A-pose) --------------------------
 bpy.context.view_layer.objects.active = obj
 obj.select_set(True)
 
@@ -272,7 +280,7 @@ tex2.image = bake_img
 links.new(tex2.outputs["Color"], bsdf2.inputs["Base Color"])
 links.new(bsdf2.outputs["BSDF"], out2.inputs["Surface"])
 
-# ---- apply pose AFTER bake (if requested) ----
+# -------------------------- Pose AFTER bake (optional) --------------------------
 if args.poseJson and os.path.exists(args.poseJson):
     print(f"[POSE] Loading pose from {args.poseJson}")
     with open(args.poseJson, 'r') as f:
@@ -281,25 +289,44 @@ if args.poseJson and os.path.exists(args.poseJson):
     apply_pose_from_angles(arm, pose_data)
     print("[POSE] Pose applied")
 
-# ---- export GLB ----
-bpy.ops.object.select_all(action='DESELECT')
-obj.select_set(True)
-# Include armature if it exists
-for o in bpy.data.objects:
-    if o.type == 'ARMATURE':
-        o.select_set(True)
+# -------------------------- Robust GLB export --------------------------
+def _ensure_object_mode():
+    try:
+        if bpy.context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+    except Exception:
+        pass  # safe to ignore if no active object
 
-print(f"[EXPORT] Exporting to {args.out}")
-bpy.ops.export_scene.gltf(
-    filepath=args.out,
-    export_format='GLB',
-    use_selection=True,
-    export_apply=True,
-    export_texcoords=True,
-    export_normals=True,
-    export_materials='EXPORT',
-    export_colors=True,
-    export_cameras=False,
-    export_lights=False
-)
-print("[EXPORT] Export complete")
+def _prepare_selection_for_export():
+    # Your file previously exported with use_selection=True; rebuild a safe selection.
+    bpy.ops.object.select_all(action='DESELECT')
+    # Always include main mesh
+    obj.select_set(True)
+    # Include armature if it exists
+    for o in bpy.data.objects:
+        if o.type == 'ARMATURE':
+            o.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+
+def _export_glb(filepath: str):
+    _ensure_object_mode()
+    _prepare_selection_for_export()
+    print(f"[EXPORT] Exporting to {filepath}")
+    res = bpy.ops.export_scene.gltf(
+        filepath=filepath,
+        export_format='GLB',
+        use_selection=True,
+        export_apply=True,
+        export_texcoords=True,
+        export_normals=True,
+        export_materials='EXPORT',
+        export_colors=True,
+        export_cameras=False,
+        export_lights=False
+    )
+    time.sleep(0.1)  # tiny fs settle for container IO
+    if not os.path.exists(filepath):
+        raise RuntimeError(f"GLB export reported {res} but file not found at {filepath}")
+    print("[EXPORT] Export complete")
+
+_export_glb(OUTPUT_GLTF)
