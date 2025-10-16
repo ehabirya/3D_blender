@@ -2,191 +2,954 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>3D Twin Try-On — Uploader & Verifier</title>
+  <title>Smart Digital Twin Generator</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- model-viewer for 3D preview -->
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
-  <link rel="stylesheet" href="https://unpkg.com/modern-normalize/modern-normalize.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    :root { --bg:#0c0d10; --panel:#14161a; --muted:#8a8f98; --text:#eef1f5; --accent:#6ea8ff; --ok:#35c28d; --warn:#ffc658; --bad:#ff6b6b; }
-    html, body { height:100%; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji"; }
-    .wrap { max-width:1200px; margin:0 auto; padding:16px; }
-    h1 { font-size:22px; margin:0 0 12px }
-    h2 { font-size:16px; margin:16px 0 8px; color:#d7dbe2 }
-    .grid { display:grid; grid-template-columns: 380px 1fr; gap:16px; }
-    .card { background:var(--panel); border:1px solid #1d2026; border-radius:14px; padding:12px; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
-    label { color:var(--muted); font-size:12px; }
-    input, select, button, textarea { background:#0f1115; color:var(--text); border:1px solid #21242c; border-radius:10px; padding:8px 10px; }
-    input[type="number"] { width:110px; }
-    button { cursor:pointer; }
-    button.primary { background:#1a2a45; border-color:#284878; }
-    button.primary:hover { background:#203150; }
-    button.success { background:#123b2e; border-color:#1f6b54; }
-    .hint { color:var(--muted); font-size:12px; }
-    .drop { border:1px dashed #2a2e36; background:#0f1115; border-radius:12px; padding:12px; text-align:center; }
-    .thumbs { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-top:10px; }
-    .thumb { position:relative; aspect-ratio:3/4; border-radius:10px; overflow:hidden; border:1px solid #23262e; }
-    .thumb img { width:100%; height:100%; object-fit:cover; }
-    .tag { position:absolute; left:6px; top:6px; background:#0008; padding:2px 6px; border-radius:6px; font-size:11px; }
-    .status-ok { color:var(--ok); }
-    .status-warn { color:var(--warn); }
-    .status-bad { color:var(--bad); }
-    .pill { display:inline-flex; align-items:center; gap:6px; border:1px solid #2a2e36; border-radius:999px; padding:4px 8px; font-size:12px; }
-    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    .log { width:100%; min-height:150px; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-    .viewer { width:100%; height:520px; border-radius:14px; overflow:hidden; border:1px solid #1d2026; background:#0b0c0f; }
-    .twocol { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-    .measure-board { position:relative; aspect-ratio:3/4; background:#0f1115; border:1px solid #23262e; border-radius:12px; overflow:hidden; }
-    .measure-board object { width:100%; height:100%; }
-    .handle { position:absolute; width:14px; height:14px; background:#6ea8ff; border:2px solid #fff; border-radius:50%; transform:translate(-50%,-50%); cursor:grab; }
-    .legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
-    .guide { font-size:12px; color:#cfd6e3; }
-    .rightcol { display:flex; flex-direction:column; gap:12px; }
-    .chips { display:flex; gap:6px; flex-wrap:wrap; }
-    .badge { background:#0f1115; border:1px solid #2a2e36; padding:4px 8px; border-radius:999px; font-size:12px;}
-    .ok { color:var(--ok); } .bad { color:var(--bad); }
+    :root {
+      --bg: #0f172a;
+      --bg-card: #1e293b;
+      --bg-card-hover: #334155;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --gradient-primary: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --gradient-success: linear-gradient(135deg, #10b981, #059669);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg-card);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 5px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent);
+    }
+
+    .container {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero {
+      background: var(--gradient-primary);
+      padding: 32px 40px;
+      border-radius: 20px;
+      margin-bottom: 32px;
+      box-shadow: 0 10px 40px rgba(59, 130, 246, 0.3);
+    }
+
+    .hero h1 {
+      font-size: 36px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: white;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .hero .subtitle {
+      font-size: 16px;
+      color: rgba(255, 255, 255, 0.9);
+      line-height: 1.6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 500px;
+      gap: 24px;
+    }
+
+    @media (max-width: 1400px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      transition: all 0.3s ease;
+    }
+
+    .card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 8px 30px rgba(59, 130, 246, 0.15);
+    }
+
+    .card h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card h2::before {
+      content: '';
+      width: 4px;
+      height: 20px;
+      background: var(--gradient-primary);
+      border-radius: 2px;
+    }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 14px;
+      transition: all 0.3s ease;
+      font-family: inherit;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    input::placeholder {
+      color: var(--text-muted);
+    }
+
+    button {
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border: none;
+      font-family: inherit;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button.primary {
+      background: var(--gradient-primary);
+      color: white;
+      box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    }
+
+    button.primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+    }
+
+    button.success {
+      background: var(--gradient-success);
+      color: white;
+      box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+    }
+
+    button.success:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    button.secondary {
+      background: var(--bg-card-hover);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    button.secondary:hover {
+      background: var(--border);
+    }
+
+    /* Gender Selector */
+    .gender-selector {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .gender-option {
+      flex: 1;
+      padding: 16px;
+      background: var(--bg);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-align: center;
+    }
+
+    .gender-option:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .gender-option.active {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.1);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .gender-option .icon {
+      font-size: 32px;
+      margin-bottom: 8px;
+    }
+
+    .gender-option .label {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    /* Upload Slots */
+    .uploads {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .slot {
+      position: relative;
+      border: 2px dashed var(--border);
+      background: var(--bg);
+      border-radius: 16px;
+      padding: 20px;
+      text-align: center;
+      min-height: 220px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .slot:hover {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.05);
+      transform: translateY(-2px);
+    }
+
+    .slot.has-file {
+      border-style: solid;
+      border-color: var(--success);
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .slot input {
+      display: none;
+    }
+
+    .slot .icon {
+      font-size: 40px;
+      margin-bottom: 8px;
+      opacity: 0.5;
+    }
+
+    .slot .preview {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 12px;
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    .slot.has-file .preview {
+      display: block;
+    }
+
+    .slot .label {
+      position: relative;
+      z-index: 1;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .slot.has-file .label {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 6px 12px;
+      border-radius: 8px;
+      color: white;
+      font-size: 11px;
+    }
+
+    /* Measurement Figure Container */
+    .measure-figure-container {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-radius: 20px;
+      border: 1px solid var(--border);
+    }
+
+    .figure-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    .figure-wrapper img {
+      width: 100%;
+      height: auto;
+      display: block;
+      filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.3));
+    }
+
+    /* Dynamic Measurement Points */
+    .measurement-point {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      opacity: 0;
+      animation: fadeInPoint 0.4s ease forwards;
+    }
+
+    @keyframes fadeInPoint {
+      from {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.8);
+      }
+      to {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+    }
+
+    .measurement-dot {
+      width: 14px;
+      height: 14px;
+      background: var(--accent);
+      border: 3px solid white;
+      border-radius: 50%;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 10px rgba(59, 130, 246, 0.4);
+      position: relative;
+    }
+
+    .measurement-dot:hover {
+      transform: scale(1.3);
+      box-shadow: 0 4px 20px rgba(59, 130, 246, 0.6);
+    }
+
+    .measurement-dot.filled {
+      background: var(--success);
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.4);
+    }
+
+    .measurement-dot::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      opacity: 0;
+      animation: pulse 2s ease infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(1);
+      }
+      50% {
+        opacity: 0.5;
+        transform: translate(-50%, -50%) scale(1.5);
+      }
+    }
+
+    .measurement-input-popup {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.98);
+      border: 2px solid var(--accent);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: none;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+      backdrop-filter: blur(10px);
+      min-width: 200px;
+      z-index: 100;
+    }
+
+    .measurement-input-popup.active {
+      display: block;
+      animation: popIn 0.3s ease;
+    }
+
+    @keyframes popIn {
+      from {
+        opacity: 0;
+        transform: scale(0.9);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .measurement-input-popup label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 8px;
+      text-transform: none;
+    }
+
+    .measurement-input-popup input {
+      width: 100%;
+      padding: 8px 12px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      color: #0f172a;
+      font-size: 14px;
+    }
+
+    .measurement-input-popup .close-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: none;
+      border: none;
+      color: #64748b;
+      cursor: pointer;
+      padding: 4px;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .measurement-line {
+      position: absolute;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      pointer-events: none;
+      opacity: 0.6;
+    }
+
+    /* Thumbs */
+    .thumbs {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .thumb {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      aspect-ratio: 3/4;
+      background: var(--bg);
+    }
+
+    .thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    /* Pills */
+    .pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pill.ok {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .pill.warn {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .pill.bad {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .status-bar {
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status-bar.info {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      color: var(--accent);
+    }
+
+    .status-bar.ok {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--success);
+    }
+
+    .status-bar.warn {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: var(--warning);
+    }
+
+    .status-bar.bad {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: var(--danger);
+    }
+
+    .viewer-container {
+      position: relative;
+      width: 100%;
+      height: 500px;
+      background: var(--bg);
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    model-viewer {
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-top: 16px;
+    }
+
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      min-width: 200px;
+    }
+
+    .slider-group label {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      text-transform: none;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      background: var(--accent-hover);
+      transform: scale(1.2);
+    }
+
+    textarea.log {
+      width: 100%;
+      min-height: 150px;
+      max-height: 300px;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      resize: vertical;
+    }
+
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-muted);
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .retake-tips {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 12px;
+    }
+
+    .retake-tips h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--warning);
+      margin-bottom: 12px;
+    }
+
+    .retake-tips ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .retake-tips li {
+      padding: 6px 0;
+      color: var(--text-muted);
+      font-size: 13px;
+      display: flex;
+      align-items: start;
+      gap: 8px;
+    }
+
+    .retake-tips li::before {
+      content: '•';
+      color: var(--warning);
+      font-weight: bold;
+      font-size: 16px;
+    }
+
+    @media (max-width: 768px) {
+      .container {
+        padding: 16px;
+      }
+
+      .hero {
+        padding: 24px;
+      }
+
+      .hero h1 {
+        font-size: 28px;
+      }
+
+      .uploads {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .card {
+        padding: 16px;
+      }
+
+      .gender-selector {
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .hero h1 {
+        font-size: 24px;
+      }
+
+      .uploads {
+        grid-template-columns: 1fr;
+      }
+
+      .action-row {
+        flex-direction: column;
+      }
+
+      .action-row button {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>3D Twin — Photo QA & Generator</h1>
+  <div class="container">
+    <div class="hero">
+      <h1>🎯 Smart Digital Twin Generator</h1>
+      <p class="subtitle">Select your gender, upload photos, click measurement points on the figure, verify, and generate your personalized 3D avatar.</p>
+    </div>
 
     <div class="grid">
-      <!-- Left: inputs -->
-      <section class="card">
-        <h2>1) Upload Photos (3–12)</h2>
-        <div id="drop" class="drop">
-          Drag & drop images here, or <label style="text-decoration:underline; cursor:pointer;">
-            browse
-            <input id="fileInput" type="file" accept="image/*" multiple style="display:none">
-          </label>
-          <div class="hint">Front, Side, Back—more photos improve seams/coverage.</div>
-        </div>
-        <div id="thumbs" class="thumbs"></div>
-
-        <h2>2) Measurements</h2>
-        <div class="row">
-          <div class="field">
-            <label>Language</label>
-            <select id="lang">
-              <option value="en">English</option>
-              <option value="de">Deutsch</option>
-              <option value="es">Español</option>
-              <option value="fr">Français</option>
-              <option value="tr">Türkçe</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Preset</label>
-            <select id="preset">
-              <option value="neutral">Neutral</option>
-              <option value="male">Male</option>
-              <option value="female">Female</option>
-              <option value="child">Child</option>
-              <option value="baby">Baby</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Pose Mode</label>
-            <select id="poseMode">
-              <option value="auto">Auto pose after bake</option>
-              <option value="neutral">Neutral A-pose</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Premium bake</label>
-            <select id="highDetail">
-              <option value="false">Standard (2K)</option>
-              <option value="true">Premium (4K)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="twocol">
-          <div>
-            <div class="field"><label>Height (cm) *</label><input id="height" type="number" min="30" max="260" placeholder="170" required></div>
-            <div class="row">
-              <div class="field"><label>Chest (cm)</label><input id="chest" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>Waist (cm)</label><input id="waist" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>Hips (cm)</label><input id="hips" type="number" min="0" step="0.1"></div>
-            </div>
-            <div class="row">
-              <div class="field"><label>Shoulder (cm)</label><input id="shoulder" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>Inseam (cm)</label><input id="inseam" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>Arm length (cm)</label><input id="arm" type="number" min="0" step="0.1"></div>
-            </div>
-            <div class="row">
-              <div class="field"><label>Foot length (cm)</label><input id="foot_length" type="number" min="0" step="0.1"></div>
-              <div class="field"><label>Foot width (cm)</label><input id="foot_width" type="number" min="0" step="0.1"></div>
-              <div class="field">
-                <label>Foot width category</label>
-                <select id="foot_width_category">
-                  <option value="">—</option>
-                  <option value="narrow">Narrow</option>
-                  <option value="regular" selected>Regular</option>
-                  <option value="wide">Wide</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <!-- Body measures board -->
-          <div>
-            <label>Where to measure (draggable guide points)</label>
-            <div id="measureBoard" class="measure-board">
-              <!-- Load your SVG. Put your file at /assets/Body_measures_SVG.svg -->
-              <object id="measureSvg" type="image/svg+xml" data="assets/Body_measures_SVG.svg"></object>
-
-              <!-- Draggable handles (normalized positions, you can add more) -->
-              <div class="handle" data-key="chest"    style="left:50%; top:37%;"></div>
-              <div class="handle" data-key="waist"    style="left:50%; top:47%;"></div>
-              <div class="handle" data-key="hips"     style="left:50%; top:57%;"></div>
-              <div class="handle" data-key="shoulder" style="left:36%; top:33%;"></div>
-              <div class="handle" data-key="inseam"   style="left:53%; top:74%;"></div>
-              <div class="handle" data-key="arm"      style="left:78%; top:39%;"></div>
-              <div class="handle" data-key="foot"     style="left:53%; top:93%;"></div>
-            </div>
-            <div class="legend">
-              <span class="badge">Drag blue dots to see **where** to measure (UI only)</span>
-            </div>
-          </div>
-        </div>
-
-        <h2>3) Actions</h2>
-        <div class="toolbar">
-          <button id="btnVerify" class="primary">Verify Photos</button>
-          <button id="btnGenerate" class="success">Generate Twin</button>
-          <span id="status" class="hint"></span>
-        </div>
-      </section>
-
-      <!-- Right: output / viewer -->
-      <section class="rightcol">
+      <div class="left-column">
+        <!-- API Configuration -->
         <div class="card">
-          <h2>Photo QA</h2>
-          <div id="qaSummary" class="chips"></div>
-          <div id="retakeTips" class="hint" style="margin-top:8px;"></div>
+          <h2>🔌 API Configuration</h2>
+          <div class="field">
+            <label>RunPod Runsync URL</label>
+            <input id="endpointFull" type="text" placeholder="https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync">
+          </div>
+          <div class="field">
+            <label>RunPod API Key (Optional)</label>
+            <input id="apiKey" type="password" placeholder="Bearer token (optional)">
+          </div>
+          <div id="statusContainer"></div>
         </div>
 
+        <!-- Gender Selection -->
         <div class="card">
-          <h2>3D Preview</h2>
-          <model-viewer id="viewer" class="viewer" camera-controls environment-image="neutral" shadow-intensity="1" exposure="1.0" auto-rotate rotation-per-second="20deg"></model-viewer>
-          <div class="toolbar" style="margin-top:8px;">
-            <button id="btnReset">Reset View</button>
-            <label>Turntable <input type="range" id="turn" min="-180" max="180" value="0"></label>
+          <h2>👤 Select Gender</h2>
+          <div class="gender-selector">
+            <div class="gender-option" data-gender="female">
+              <div class="icon">👩</div>
+              <div class="label">Female</div>
+            </div>
+            <div class="gender-option active" data-gender="male">
+              <div class="icon">👨</div>
+              <div class="label">Male</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Upload Photos -->
+        <div class="card">
+          <h2>📸 Upload Photos</h2>
+          <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 13px;">
+            Required: Front, Side, Back views. Optional: Foot photo for better accuracy.
+          </p>
+          <div class="uploads">
+            <div class="slot" data-role="front">
+              <div class="icon">📷</div>
+              <span class="label">Front View</span>
+              <input type="file" accept="image/*">
+              <img class="preview"/>
+            </div>
+            <div class="slot" data-role="side">
+              <div class="icon">📷</div>
+              <span class="label">Side View</span>
+              <input type="file" accept="image/*">
+              <img class="preview"/>
+            </div>
+            <div class="slot" data-role="back">
+              <div class="icon">📷</div>
+              <span class="label">Back View</span>
+              <input type="file" accept="image/*">
+              <img class="preview"/>
+            </div>
+            <div class="slot" data-role="foot">
+              <div class="icon">👣</div>
+              <span class="label">Foot (Optional)</span>
+              <input type="file" accept="image/*">
+              <img class="preview"/>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button id="btnVerify" class="primary">
+              <span>✓</span> Verify Photos
+            </button>
+            <button id="btnGenerate" class="success">
+              <span>🚀</span> Generate 3D Twin
+            </button>
+          </div>
+        </div>
+
+        <!-- Body Measurements -->
+        <div class="card">
+          <h2>📏 Body Measurements</h2>
+          <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 13px;">
+            Click on the colored dots to enter measurements in centimeters. Points appear around the body naturally.
+          </p>
+          <div class="measure-figure-container">
+            <div class="figure-wrapper" id="figureWrapper">
+              <!-- Figure will be injected here based on gender -->
+            </div>
+          </div>
+          <p style="color: var(--text-muted); margin-top: 16px; font-size: 12px; text-align: center;">
+            💡 Tip: Click any blue dot to enter measurement. Green dots indicate filled values.
+          </p>
+        </div>
+      </div>
+
+      <div class="right-column">
+        <div class="card">
+          <h2>🖼️ Uploaded Photos</h2>
+          <div id="thumbsReview" class="thumbs">
+            <div class="empty-state">
+              <p>No photos uploaded yet</p>
+            </div>
           </div>
         </div>
 
         <div class="card">
-          <h2>Debug / Progress</h2>
-          <textarea id="log" class="log" readonly></textarea>
+          <h2>✓ Photo Quality Analysis</h2>
+          <div id="qaSummary" class="pills">
+            <span style="color: var(--text-muted); font-size: 13px;">Upload and verify photos to see quality analysis</span>
+          </div>
+          <div id="retakeTipsContainer"></div>
         </div>
-      </section>
+
+        <div class="card">
+          <h2>🎭 3D Preview</h2>
+          <div class="viewer-container">
+            <model-viewer 
+              id="viewer" 
+              camera-controls 
+              environment-image="neutral" 
+              shadow-intensity="1" 
+              exposure="1.0"
+              auto-rotate
+              rotation-per-second="30deg">
+            </model-viewer>
+          </div>
+          <div class="controls-row">
+            <button id="btnReset" class="secondary">
+              <span>🔄</span> Reset View
+            </button>
+            <div class="slider-group">
+              <label>Rotate:</label>
+              <input type="range" id="turn" min="-180" max="180" value="0">
+            </div>
+            <button id="btnDownload" class="success" style="display:none">
+              <span>⬇</span> Download GLB
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>📋 Progress Log</h2>
+          <textarea id="log" class="log" readonly placeholder="Activity log will appear here..."></textarea>
+        </div>
+      </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app-dynamic.js"></script>
 </body>
 </html>
