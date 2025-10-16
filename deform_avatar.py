@@ -180,4 +180,126 @@ links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 
 frontN = _load_img_node(nodes, links, args.frontTex)
 sideN  = _load_img_node(nodes, links, args.sideTex)
-backN  =
+# Continuation from line 183 onwards - FIXED VERSION
+# This file contains only the missing/fixed portion starting from line 183
+
+backN  = _load_img_node(nodes, links, args.backTex)
+
+# ---- multi-photo lists (prioritize over single) ----
+frontList = _split_list(args.frontTexList)
+sideList  = _split_list(args.sideTexList)
+backList  = _split_list(args.backTexList)
+
+front_nodes = _load_many(nodes, links, frontList) if frontList else ([frontN] if frontN else [])
+side_nodes  = _load_many(nodes, links, sideList)  if sideList  else ([sideN]  if sideN  else [])
+back_nodes  = _load_many(nodes, links, backList)  if backList  else ([backN]  if backN  else [])
+
+# ---- merge multi-photos per role ----
+front_color = _merge_images(nodes, links, front_nodes)
+side_color  = _merge_images(nodes, links, side_nodes)
+back_color  = _merge_images(nodes, links, back_nodes)
+
+# ---- combine front/side/back with FaceMask logic ----
+face_mask_attr = _make_facemask_if_missing(obj, "FaceMask")
+attr_node = nodes.new("ShaderNodeAttribute")
+attr_node.attribute_name = face_mask_attr
+
+# Use FaceMask to blend front (face region) over side/back
+if front_color and (side_color or back_color):
+    # Mix front over side/back using FaceMask
+    base = side_color or back_color
+    mix_face = nodes.new("ShaderNodeMixRGB")
+    mix_face.blend_type = 'MIX'
+    links.new(attr_node.outputs["Fac"], mix_face.inputs["Fac"])
+    links.new(base, mix_face.inputs[1])
+    links.new(front_color, mix_face.inputs[2])
+    final_color = mix_face.outputs["Color"]
+elif front_color:
+    final_color = front_color
+elif side_color:
+    final_color = side_color
+elif back_color:
+    final_color = back_color
+else:
+    # No textures, use default gray
+    rgb = nodes.new("ShaderNodeRGB")
+    rgb.outputs[0].default_value = (0.5, 0.5, 0.5, 1.0)
+    final_color = rgb.outputs["Color"]
+
+# ---- connect to BSDF ----
+links.new(final_color, bsdf.inputs["Base Color"])
+
+# ---- assign material ----
+if not obj.data.materials:
+    obj.data.materials.append(mat)
+else:
+    obj.data.materials[0] = mat
+
+# ---- bake textures (in neutral A-pose) ----
+bpy.context.view_layer.objects.active = obj
+obj.select_set(True)
+
+# Create bake target image
+tex_res = args.texRes if not args.highDetail else max(args.texRes, 4096)
+bake_img = bpy.data.images.new("BakedTexture", width=tex_res, height=tex_res, alpha=True)
+bake_img.colorspace_settings.name = 'sRGB'
+
+# Add image texture node for baking
+img_tex = nodes.new("ShaderNodeTexImage")
+img_tex.image = bake_img
+img_tex.select = True
+nodes.active = img_tex
+
+# Bake diffuse
+bpy.context.scene.cycles.samples = 64
+bpy.context.scene.render.engine = 'CYCLES'
+bpy.context.scene.cycles.device = 'CPU'
+bpy.context.scene.cycles.bake_type = 'DIFFUSE'
+bpy.context.scene.render.bake.use_pass_direct = False
+bpy.context.scene.render.bake.use_pass_indirect = False
+bpy.context.scene.render.bake.use_pass_color = True
+
+print("[BAKE] Starting bake...")
+bpy.ops.object.bake(type='DIFFUSE')
+print("[BAKE] Bake complete")
+
+# ---- switch material to use baked texture ----
+nodes.clear()
+out2 = nodes.new("ShaderNodeOutputMaterial")
+bsdf2 = nodes.new("ShaderNodeBsdfPrincipled")
+tex2 = nodes.new("ShaderNodeTexImage")
+tex2.image = bake_img
+links.new(tex2.outputs["Color"], bsdf2.inputs["Base Color"])
+links.new(bsdf2.outputs["BSDF"], out2.inputs["Surface"])
+
+# ---- apply pose AFTER bake (if requested) ----
+if args.poseJson and os.path.exists(args.poseJson):
+    print(f"[POSE] Loading pose from {args.poseJson}")
+    with open(args.poseJson, 'r') as f:
+        pose_data = json.load(f)
+    arm = ensure_basic_armature(obj)
+    apply_pose_from_angles(arm, pose_data)
+    print("[POSE] Pose applied")
+
+# ---- export GLB ----
+bpy.ops.object.select_all(action='DESELECT')
+obj.select_set(True)
+# Include armature if it exists
+for o in bpy.data.objects:
+    if o.type == 'ARMATURE':
+        o.select_set(True)
+
+print(f"[EXPORT] Exporting to {args.out}")
+bpy.ops.export_scene.gltf(
+    filepath=args.out,
+    export_format='GLB',
+    use_selection=True,
+    export_apply=True,
+    export_texcoords=True,
+    export_normals=True,
+    export_materials='EXPORT',
+    export_colors=True,
+    export_cameras=False,
+    export_lights=False
+)
+print("[EXPORT] Export complete")
