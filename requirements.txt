@@ -1,5 +1,5 @@
 # IMPROVED requirements.txt with pinned versions for production
-# 
+#
 # IMPROVEMENTS:
 # - All versions pinned for reproducibility
 # - Tested versions that work together
@@ -15,19 +15,17 @@ opencv-python-headless==4.9.0.80
 # Pose detection and face mesh (CPU-only)
 mediapipe==0.10.11
 
-# Protocol buffers (required by MediaPipe)
-# Note: MediaPipe requires <5.0.0
-protobuf==4.25.1
+# --- FIX: mediapipe 0.10.11 requires protobuf < 4 ---
+# (Replaces previous protobuf==4.25.1 pin)
+protobuf==3.20.3
 
-# RunPod serverless SDK
-runpod==1.6.2
+# RunPod SDK for serverless queue/handler
+runpod==1.6.0
 
-# Image processing utilities
-Pillow==10.2.0
-
-# Optional: Performance monitoring (uncomment if needed)
-# psutil==5.9.8  # For memory/CPU monitoring
-# py-cpuinfo==9.0.0  # For CPU info logging
+# Common utilities that many handlers/healthchecks rely on
+requests==2.32.3
+Pillow==10.4.0
+tqdm==4.66.4
 
 # Optional: Better error tracking (uncomment if needed)
 # sentry-sdk==1.40.0  # For error reporting to Sentry
