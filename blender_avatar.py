@@ -2,13 +2,7 @@
 """
 blender_avatar.py - Wrapper for Blender avatar generation
 
-This module provides the run_blender_avatar() function that:
-1. Prepares a unique temp directory for output
-2. Builds the Blender command with all necessary arguments
-3. Executes Blender in background mode with deform_avatar.py
-4. Returns the generated GLB file as base64
-
-CRITICAL FIX: Ensures output path is correctly passed to avoid "file not found" errors
+FIXED: Now properly handles base64 photo data by writing to temp files
 """
 
 import os
@@ -20,6 +14,40 @@ import json
 import shutil
 from pathlib import Path
 from typing import Optional
+
+
+def _write_b64_to_file(b64_string: str, output_dir: str, prefix: str) -> Optional[str]:
+    """
+    Write base64 image data to a temporary file.
+    
+    Args:
+        b64_string: Base64 encoded image
+        output_dir: Directory to write file to
+        prefix: Filename prefix (e.g., "front", "side")
+        
+    Returns:
+        File path or None if failed
+    """
+    if not b64_string:
+        return None
+    
+    try:
+        # Handle data URI format
+        if b64_string.startswith('data:'):
+            b64_string = b64_string.split(',', 1)[1]
+        
+        # Decode base64
+        img_bytes = base64.b64decode(b64_string)
+        
+        # Write to temp file
+        filepath = os.path.join(output_dir, f"{prefix}.jpg")
+        with open(filepath, 'wb') as f:
+            f.write(img_bytes)
+        
+        return filepath
+    except Exception as e:
+        print(f"[BLENDER] Warning: Failed to write {prefix} photo: {e}", file=sys.stderr)
+        return None
 
 
 def run_blender_avatar(
@@ -40,13 +68,13 @@ def run_blender_avatar(
         preset: Body type preset ("male", "female", "neutral", "child", "baby")
         height_m: Height in meters
         measurements: Dict with optional keys: chest, waist, hips, shoulder, inseam, arm
-        photos: Dict with keys: front, side, back (photo paths)
+        photos: Dict with keys: front, side, back (base64 strings)
         tex_res: Texture resolution (512-8192)
-        photos_ranked: Optional dict with ranked photo lists per role
+        photos_ranked: Optional dict with ranked photo lists per role (base64 strings)
         high_detail: Force high detail baking (≥4K)
         pose_mode: "neutral" or "auto"
         pose_angles: Dict with pose angles if pose_mode="auto"
-    
+        
     Returns:
         dict: {
             "ok": bool,
@@ -64,7 +92,7 @@ def run_blender_avatar(
     print(f"[BLENDER] Created temp directory: {output_dir}")
     print(f"[BLENDER] Target output file: {output_file}")
     
-    # Ensure directory exists (should already exist from mkdtemp, but be safe)
+    # Ensure directory exists
     os.makedirs(output_dir, exist_ok=True)
     
     # Locate Blender binary
@@ -91,12 +119,23 @@ def run_blender_avatar(
     
     print(f"[BLENDER] Using base blend: {base_blend}")
     
+    # Write base64 photos to temp files
+    photo_files = {}
+    if photos:
+        print(f"[BLENDER] Converting base64 photos to files...")
+        if photos.get("front"):
+            photo_files["front"] = _write_b64_to_file(photos["front"], output_dir, "front")
+        if photos.get("side"):
+            photo_files["side"] = _write_b64_to_file(photos["side"], output_dir, "side")
+        if photos.get("back"):
+            photo_files["back"] = _write_b64_to_file(photos["back"], output_dir, "back")
+    
     # Build Blender command
     cmd = [
         blender_bin,
-        "-b", base_blend,           # Background mode with base file
-        "--python", "/app/deform_avatar.py",  # Python script to run
-        "--"                        # Separator for script arguments
+        "-b", base_blend,
+        "--python", "/app/deform_avatar.py",
+        "--"
     ]
     
     # Add core arguments
@@ -118,40 +157,63 @@ def run_blender_avatar(
         if value is not None:
             cmd.extend([f"--{key}", str(value)])
     
-    # Add single photo paths
-    if photos:
-        if photos.get("front"):
-            cmd.extend(["--frontTex", photos["front"]])
-        if photos.get("side"):
-            cmd.extend(["--sideTex", photos["side"]])
-        if photos.get("back"):
-            cmd.extend(["--backTex", photos["back"]])
+    # Add single photo paths (from converted files)
+    if photo_files.get("front"):
+        cmd.extend(["--frontTex", photo_files["front"]])
+        print(f"[BLENDER] Front photo: {photo_files['front']}")
+    if photo_files.get("side"):
+        cmd.extend(["--sideTex", photo_files["side"]])
+        print(f"[BLENDER] Side photo: {photo_files['side']}")
+    if photo_files.get("back"):
+        cmd.extend(["--backTex", photo_files["back"]])
+        print(f"[BLENDER] Back photo: {photo_files['back']}")
     
     # Handle multi-photo ranked lists (if available)
+    # photos_ranked contains base64 strings, need to convert them
     if photos_ranked:
+        print(f"[BLENDER] Processing ranked photos...")
+        
         # Front photos
-        if photos_ranked.get("front"):
-            front_paths = [p["path"] for p in photos_ranked["front"] if p.get("path") and os.path.exists(p["path"])]
-            if front_paths:
-                front_list = ";".join(front_paths)
+        if photos_ranked.get("front") and isinstance(photos_ranked["front"], list):
+            front_files = []
+            for idx, b64_photo in enumerate(photos_ranked["front"][:2]):  # Max 2
+                if isinstance(b64_photo, str):
+                    filepath = _write_b64_to_file(b64_photo, output_dir, f"front_{idx}")
+                    if filepath:
+                        front_files.append(filepath)
+            
+            if front_files:
+                front_list = ";".join(front_files)
                 cmd.extend(["--frontTexList", front_list])
-                print(f"[BLENDER] Front photos: {len(front_paths)} images")
+                print(f"[BLENDER] Front ranked photos: {len(front_files)} images")
         
         # Side photos
-        if photos_ranked.get("side"):
-            side_paths = [p["path"] for p in photos_ranked["side"] if p.get("path") and os.path.exists(p["path"])]
-            if side_paths:
-                side_list = ";".join(side_paths)
+        if photos_ranked.get("side") and isinstance(photos_ranked["side"], list):
+            side_files = []
+            for idx, b64_photo in enumerate(photos_ranked["side"][:2]):
+                if isinstance(b64_photo, str):
+                    filepath = _write_b64_to_file(b64_photo, output_dir, f"side_{idx}")
+                    if filepath:
+                        side_files.append(filepath)
+            
+            if side_files:
+                side_list = ";".join(side_files)
                 cmd.extend(["--sideTexList", side_list])
-                print(f"[BLENDER] Side photos: {len(side_paths)} images")
+                print(f"[BLENDER] Side ranked photos: {len(side_files)} images")
         
         # Back photos
-        if photos_ranked.get("back"):
-            back_paths = [p["path"] for p in photos_ranked["back"] if p.get("path") and os.path.exists(p["path"])]
-            if back_paths:
-                back_list = ";".join(back_paths)
+        if photos_ranked.get("back") and isinstance(photos_ranked["back"], list):
+            back_files = []
+            for idx, b64_photo in enumerate(photos_ranked["back"][:2]):
+                if isinstance(b64_photo, str):
+                    filepath = _write_b64_to_file(b64_photo, output_dir, f"back_{idx}")
+                    if filepath:
+                        back_files.append(filepath)
+            
+            if back_files:
+                back_list = ";".join(back_files)
                 cmd.extend(["--backTexList", back_list])
-                print(f"[BLENDER] Back photos: {len(back_paths)} images")
+                print(f"[BLENDER] Back ranked photos: {len(back_files)} images")
     
     # Handle pose (if auto mode and angles provided)
     pose_json_path = None
@@ -269,12 +331,8 @@ def run_blender_avatar(
         
         # Cleanup temp files
         try:
-            if os.path.exists(output_file):
-                os.remove(output_file)
-            if pose_json_path and os.path.exists(pose_json_path):
-                os.remove(pose_json_path)
             if os.path.exists(output_dir):
-                os.rmdir(output_dir)
+                shutil.rmtree(output_dir)
             print("[BLENDER] Temp files cleaned up")
         except Exception as e:
             print(f"[BLENDER] Warning: Cleanup failed: {e}")
@@ -328,43 +386,3 @@ def run_blender_avatar(
             "error": error_msg,
             "log": str(e)
         }
-
-
-# Test function for local development
-def _test():
-    """Test the blender_avatar function locally"""
-    result = run_blender_avatar(
-        preset="female",
-        height_m=1.65,
-        measurements={
-            "chest": None,
-            "waist": None,
-            "hips": None,
-            "shoulder": None,
-            "inseam": None,
-            "arm": None
-        },
-        photos={
-            "front": None,
-            "side": None,
-            "back": None
-        },
-        tex_res=1024,
-        photos_ranked=None,
-        high_detail=False,
-        pose_mode="neutral",
-        pose_angles=None
-    )
-    
-    print("\n=== TEST RESULT ===")
-    print(f"Success: {result.get('ok')}")
-    if result.get('ok'):
-        print(f"GLB base64 length: {len(result.get('glb_b64', ''))}")
-        print(f"File size: {result.get('file_size')} bytes")
-    else:
-        print(f"Error: {result.get('error')}")
-    print(f"\nLog:\n{result.get('log', '')[:500]}...")
-
-
-if __name__ == "__main__":
-    _test()
