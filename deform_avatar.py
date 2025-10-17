@@ -77,11 +77,6 @@ for key, value in vars(args).items():
         print(f"  {key}: {value}")
 
 # -------------------- Output Path Handling --------------------
-# Multiple fallback mechanisms to ensure we get the right path:
-# 1. Environment variable (set by wrapper)
-# 2. Command line argument
-# 3. Default
-
 OUTPUT_GLTF = os.environ.get("OUTPUT_GLTF") or args.out or "/tmp/avatar.glb"
 
 print("=" * 80)
@@ -513,6 +508,7 @@ start_time = time.time()
 bpy.ops.object.bake(type='DIFFUSE')
 bake_time = time.time() - start_time
 print(f"[DEFORM] Baking complete in {bake_time:.1f}s")
+
 # Pack the baked texture into the blend file
 print("[DEFORM] Packing baked texture...")
 baked_image = bpy.data.images.get("BakedTexture")
@@ -523,7 +519,9 @@ if baked_image:
     else:
         print("[DEFORM] ✓ Texture already packed")
 else:
-    # Switch material to use baked texture
+    print("[DEFORM] ⚠️ Warning: BakedTexture not found!")
+
+# Switch material to use baked texture
 print("[DEFORM] Switching to baked texture...")
 nodes.clear()
 
@@ -624,9 +622,9 @@ def _export_glb(filepath: str):
     # Perform export with FULL material and texture support
     try:
         result = bpy.ops.export_scene.gltf(
-            filepath=filepath,  # FIXED: was output_path
+            filepath=filepath,
             export_format='GLB',
-            use_selection=True,  # Export selected objects only
+            use_selection=True,
             
             # Geometry
             export_texcoords=True,
