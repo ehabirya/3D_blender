@@ -523,16 +523,29 @@ if baked_image:
     else:
         print("[DEFORM] ✓ Texture already packed")
 else:
-    print("[DEFORM] ⚠️ Warning: BakedTexture not found!")
-# Switch material to use baked texture
+    # Switch material to use baked texture
 print("[DEFORM] Switching to baked texture...")
 nodes.clear()
+
+# Create material output and BSDF
 out2 = nodes.new("ShaderNodeOutputMaterial")
 bsdf2 = nodes.new("ShaderNodeBsdfPrincipled")
+
+# Create texture coordinate node (CRITICAL!)
+uv_node = nodes.new("ShaderNodeTexCoord")
+
+# Create texture node and connect to UV coordinates
 tex2 = nodes.new("ShaderNodeTexImage")
 tex2.image = bake_img
+
+# CRITICAL: Connect UV coordinates to texture
+links.new(uv_node.outputs["UV"], tex2.inputs["Vector"])
+
+# Connect texture to material
 links.new(tex2.outputs["Color"], bsdf2.inputs["Base Color"])
 links.new(bsdf2.outputs["BSDF"], out2.inputs["Surface"])
+
+print("[DEFORM] ✓ Baked texture connected with UV coordinates")
 
 # -------------------------- Pose Application (After Bake) --------------------------
 if args.poseJson and os.path.exists(args.poseJson):
