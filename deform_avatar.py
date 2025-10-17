@@ -509,10 +509,18 @@ bpy.ops.object.bake(type='DIFFUSE')
 bake_time = time.time() - start_time
 print(f"[DEFORM] Baking complete in {bake_time:.1f}s")
 
-# Pack the baked texture into the blend file
-print("[DEFORM] Packing baked texture...")
+# CRITICAL FIX: Save the baked texture to disk before packing
+print("[DEFORM] Saving baked texture to disk...")
 baked_image = bpy.data.images.get("BakedTexture")
 if baked_image:
+    # Save to temporary file first
+    temp_texture_path = os.path.join(output_dir, "baked_texture.png")
+    baked_image.filepath_raw = temp_texture_path
+    baked_image.file_format = 'PNG'
+    baked_image.save()
+    print(f"[DEFORM] ✓ Texture saved to: {temp_texture_path}")
+    
+    # Now pack it
     if not baked_image.packed_file:
         baked_image.pack()
         print("[DEFORM] ✓ Texture packed successfully")
