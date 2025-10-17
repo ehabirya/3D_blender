@@ -1,5 +1,5 @@
 # =========================
-# Blender + Python (CPU) image - IMPROVED VERSION
+# Blender + Python (CPU) image - IMPROVED VERSIONd
 # =========================
 # FIXES:
 # - Added retry logic for Blender download
