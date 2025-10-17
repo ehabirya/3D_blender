@@ -570,7 +570,7 @@ def _prepare_selection_for_export():
 
 
 def _export_glb(filepath: str):
-    """Export scene as GLB with verification"""
+    """Export scene as GLB with verification and texture support"""
     _ensure_object_mode()
     _prepare_selection_for_export()
     
@@ -584,23 +584,50 @@ def _export_glb(filepath: str):
         os.makedirs(parent, exist_ok=True)
         print(f"[DEFORM] Created directory: {parent}")
     
-    # Perform export
+    # Verify material and texture before export
+    if obj.data.materials:
+        mat = obj.data.materials[0]
+        print(f"[DEFORM] Material: {mat.name}")
+        if mat.use_nodes:
+            for node in mat.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    print(f"[DEFORM] ✓ Found texture node with image: {node.image.name}")
+                    print(f"[DEFORM] ✓ Image packed: {node.image.packed_file is not None}")
+    
+    # Perform export with FULL material and texture support
     try:
         result = bpy.ops.export_scene.gltf(
             filepath=filepath,
             export_format='GLB',
             use_selection=True,
             export_apply=True,
+            
+            # CRITICAL: Texture export settings
             export_texcoords=True,
             export_normals=True,
-            export_materials='EXPORT',
+            export_materials='EXPORT',  # Export materials
             export_colors=True,
+            export_image_format='AUTO',  # Let Blender choose best format
+            
+            # Include packed images
+            export_texture_dir='',  # Empty means pack in GLB
+            export_keep_originals=False,
+            
+            # Don't export cameras/lights
             export_cameras=False,
-            export_lights=False
+            export_lights=False,
+            
+            # Animation settings (disabled)
+            export_animations=False,
+            
+            # Compression
+            export_draco_mesh_compression_enable=False
         )
         print(f"[DEFORM] Export operation result: {result}")
     except Exception as e:
         print(f"[DEFORM] ERROR during export: {e}")
+        import traceback
+        traceback.print_exc()
         raise
     
     # Wait for filesystem to settle
@@ -627,8 +654,17 @@ def _export_glb(filepath: str):
     if file_size == 0:
         raise RuntimeError(f"GLB file created but is empty (0 bytes)")
     
+    # Additional verification: Check if file is a valid GLB
+    with open(filepath, 'rb') as f:
+        header = f.read(12)
+        if len(header) >= 4:
+            magic = header[0:4]
+            if magic == b'glTF':
+                print("[DEFORM] ✓ Valid GLB file signature detected")
+            else:
+                print(f"[DEFORM] ⚠ Warning: Unexpected file signature: {magic}")
+    
     return file_size
-
 
 # Perform the export
 print(f"[DEFORM] Final output path: {OUTPUT_GLTF}")
