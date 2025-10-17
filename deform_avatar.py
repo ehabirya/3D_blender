@@ -509,23 +509,30 @@ bpy.ops.object.bake(type='DIFFUSE')
 bake_time = time.time() - start_time
 print(f"[DEFORM] Baking complete in {bake_time:.1f}s")
 
-# CRITICAL FIX: Save the baked texture to disk before packing
+# CRITICAL FIX: Save the baked texture to disk, then reload it
 print("[DEFORM] Saving baked texture to disk...")
 baked_image = bpy.data.images.get("BakedTexture")
 if baked_image:
-    # Save to temporary file first
+    # Save to temporary file
     temp_texture_path = os.path.join(output_dir, "baked_texture.png")
     baked_image.filepath_raw = temp_texture_path
     baked_image.file_format = 'PNG'
     baked_image.save()
     print(f"[DEFORM] ✓ Texture saved to: {temp_texture_path}")
     
-    # Now pack it
-    if not baked_image.packed_file:
-        baked_image.pack()
-        print("[DEFORM] ✓ Texture packed successfully")
-    else:
-        print("[DEFORM] ✓ Texture already packed")
+    # CRITICAL: Remove old image and reload from disk
+    # This ensures GLB exporter can find and embed the texture
+    bpy.data.images.remove(baked_image)
+    print("[DEFORM] Removed in-memory texture")
+    
+    # Reload from disk
+    bake_img = bpy.data.images.load(temp_texture_path)
+    bake_img.name = "BakedTexture"
+    print("[DEFORM] ✓ Texture reloaded from disk")
+    
+    # Pack the reloaded image
+    bake_img.pack()
+    print("[DEFORM] ✓ Texture packed successfully")
 else:
     print("[DEFORM] ⚠️ Warning: BakedTexture not found!")
 
@@ -540,9 +547,9 @@ bsdf2 = nodes.new("ShaderNodeBsdfPrincipled")
 # Create texture coordinate node (CRITICAL!)
 uv_node = nodes.new("ShaderNodeTexCoord")
 
-# Create texture node and connect to UV coordinates
+# Create texture node and connect to RELOADED texture
 tex2 = nodes.new("ShaderNodeTexImage")
-tex2.image = bake_img
+tex2.image = bake_img  # Now using the reloaded image
 
 # CRITICAL: Connect UV coordinates to texture
 links.new(uv_node.outputs["UV"], tex2.inputs["Vector"])
