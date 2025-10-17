@@ -513,7 +513,17 @@ start_time = time.time()
 bpy.ops.object.bake(type='DIFFUSE')
 bake_time = time.time() - start_time
 print(f"[DEFORM] Baking complete in {bake_time:.1f}s")
-
+# Pack the baked texture into the blend file
+print("[DEFORM] Packing baked texture...")
+baked_image = bpy.data.images.get("BakedTexture")
+if baked_image:
+    if not baked_image.packed_file:
+        baked_image.pack()
+        print("[DEFORM] ✓ Texture packed successfully")
+    else:
+        print("[DEFORM] ✓ Texture already packed")
+else:
+    print("[DEFORM] ⚠️ Warning: BakedTexture not found!")
 # Switch material to use baked texture
 print("[DEFORM] Switching to baked texture...")
 nodes.clear()
@@ -597,11 +607,11 @@ def _export_glb(filepath: str):
     # Perform export with FULL material and texture support
     try:
         result = bpy.ops.export_scene.gltf(
-            filepath=filepath,
+            filepath=output_path,
             export_format='GLB',
-            use_selection=True,
-            export_apply=True,
-            
+            export_texcoords=True,
+            export_normals=True,
+
             # CRITICAL: Texture export settings
             export_texcoords=True,
             export_normals=True,
