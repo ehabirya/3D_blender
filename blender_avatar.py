@@ -2,7 +2,10 @@
 """
 blender_avatar.py - Wrapper for Blender avatar generation
 
-FIXED: Now properly handles base64 photo data by writing to temp files
+- Handles base64 photos & data: URIs (chooses proper file extension)
+- Supports single photos AND ranked photo lists (front/side/back)
+- Silences ALSA with SDL_AUDIODRIVER=dummy for headless runs
+- Exports GLB via deform_avatar.py and returns base64 + logs
 """
 
 import os
@@ -12,43 +15,98 @@ import subprocess
 import tempfile
 import json
 import shutil
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable
+
+# Limits to keep serverless jobs predictable
+MAX_TOTAL_PHOTOS = 10  # across all roles
 
 
-def _write_b64_to_file(b64_string: str, output_dir: str, prefix: str) -> Optional[str]:
+# ----------------------------- helpers -----------------------------
+
+def _guess_ext_from_header(header: str) -> str:
+    """Pick extension from data: URI mime type."""
+    if not header.startswith("data:"):
+        return ".jpg"
+    mime = header.split(";")[0].split(":", 1)[-1].lower()
+    if "png" in mime:
+        return ".png"
+    if "webp" in mime:
+        return ".webp"
+    if "jpeg" in mime or "jpg" in mime:
+        return ".jpg"
+    return ".jpg"
+
+
+def _sniff_ext_from_bytes(b: bytes) -> str:
+    """Best-effort file type sniff from magic bytes."""
+    if len(b) >= 8 and b[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if len(b) >= 3 and b[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if len(b) >= 12 and b[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _write_b64_to_file(b64_string: str, output_dir: str, prefix: str, ext_hint: Optional[str] = None) -> Optional[str]:
     """
-    Write base64 image data to a temporary file.
-    
-    Args:
-        b64_string: Base64 encoded image
-        output_dir: Directory to write file to
-        prefix: Filename prefix (e.g., "front", "side")
-        
-    Returns:
-        File path or None if failed
+    Write base64 image data (plain or data: URI) to a file with a sensible extension.
+    Returns the path or None on failure.
     """
     if not b64_string:
         return None
-    
+
     try:
-        # Handle data URI format
-        if b64_string.startswith('data:'):
-            b64_string = b64_string.split(',', 1)[1]
-        
-        # Decode base64
-        img_bytes = base64.b64decode(b64_string)
-        
-        # Write to temp file
-        filepath = os.path.join(output_dir, f"{prefix}.jpg")
-        with open(filepath, 'wb') as f:
+        header = ""
+        payload = b64_string
+        if b64_string.startswith("data:"):
+            # data:image/png;base64,AAAA...
+            header, payload = b64_string.split(",", 1)
+
+        img_bytes = base64.b64decode(payload)
+
+        # Choose extension: header hint > bytes sniff > ext_hint > jpg
+        ext = _guess_ext_from_header(header) if header else None
+        if not ext:
+            ext = _sniff_ext_from_bytes(img_bytes)
+        if not ext and ext_hint:
+            ext = ext_hint
+        if not ext:
+            ext = ".jpg"
+
+        filepath = os.path.join(output_dir, f"{prefix}{ext}")
+        with open(filepath, "wb") as f:
             f.write(img_bytes)
-        
         return filepath
     except Exception as e:
         print(f"[BLENDER] Warning: Failed to write {prefix} photo: {e}", file=sys.stderr)
         return None
 
+
+def _iter_nonempty(v) -> Iterable[str]:
+    """Normalize a value into an iterable of non-empty strings."""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, str) and x.strip()]
+    if isinstance(v, str) and v.strip():
+        return [v]
+    return []
+
+
+def _unique_preserve_order(seq: Iterable[str]) -> list[str]:
+    seen = set()
+    out = []
+    for s in seq:
+        if s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out
+
+
+# ----------------------------- main entry -----------------------------
 
 def run_blender_avatar(
     preset: str,
@@ -63,183 +121,130 @@ def run_blender_avatar(
 ) -> dict:
     """
     Generate a 3D avatar GLB using Blender.
-    
-    Args:
-        preset: Body type preset ("male", "female", "neutral", "child", "baby")
-        height_m: Height in meters
-        measurements: Dict with optional keys: chest, waist, hips, shoulder, inseam, arm
-        photos: Dict with keys: front, side, back (base64 strings)
-        tex_res: Texture resolution (512-8192)
-        photos_ranked: Optional dict with ranked photo lists per role (base64 strings)
-        high_detail: Force high detail baking (≥4K)
-        pose_mode: "neutral" or "auto"
-        pose_angles: Dict with pose angles if pose_mode="auto"
-        
+
     Returns:
-        dict: {
-            "ok": bool,
-            "glb_b64": str (if success),
-            "error": str (if failure),
-            "log": str (Blender output),
-            "file_size": int (if success)
-        }
+        dict with keys:
+          ok: bool
+          glb_b64: str (on success)
+          error: str (on failure)
+          log: str (blender stdout/stderr)
+          file_size: int (on success)
+          returncode: int
     """
-    
     # Create unique temp directory for this avatar
     output_dir = tempfile.mkdtemp(prefix="avatar_")
     output_file = os.path.join(output_dir, "twin.glb")
-    
-    print(f"[BLENDER] Created temp directory: {output_dir}")
-    print(f"[BLENDER] Target output file: {output_file}")
-    
-    # Ensure directory exists
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Locate Blender binary
+    print(f"[BLENDER] Temp dir: {output_dir}")
+    print(f"[BLENDER] Output file: {output_file}")
+
+    # Resolve Blender binary and base .blend
     blender_bin = os.environ.get("BLENDER_BIN", "/blender/blender")
     if not os.path.exists(blender_bin):
-        return {
-            "ok": False,
-            "error": f"Blender binary not found at {blender_bin}",
-            "log": ""
-        }
-    
-    # Locate base .blend file
+        return {"ok": False, "error": f"Blender binary not found at {blender_bin}", "log": ""}
+
     base_blend = f"/app/assets/base_{preset}.blend"
     if not os.path.exists(base_blend):
-        print(f"[BLENDER] Warning: {base_blend} not found, falling back to base_female.blend")
+        print(f"[BLENDER] Warning: {base_blend} not found; fallback to base_female.blend")
         base_blend = "/app/assets/base_female.blend"
-    
     if not os.path.exists(base_blend):
-        return {
-            "ok": False,
-            "error": f"Base blend file not found: {base_blend}",
-            "log": ""
-        }
-    
-    print(f"[BLENDER] Using base blend: {base_blend}")
-    
-    # Write base64 photos to temp files
-    photo_files = {}
+        return {"ok": False, "error": f"Base blend not found: {base_blend}", "log": ""}
+
+    # Convert photos (single + ranked) to files
+    print("[BLENDER] Converting photos...")
+    photo_paths = {"front": [], "side": [], "back": []}
+
+    # Singles (base64 strings)
     if photos:
-        print(f"[BLENDER] Converting base64 photos to files...")
-        if photos.get("front"):
-            photo_files["front"] = _write_b64_to_file(photos["front"], output_dir, "front")
-        if photos.get("side"):
-            photo_files["side"] = _write_b64_to_file(photos["side"], output_dir, "side")
-        if photos.get("back"):
-            photo_files["back"] = _write_b64_to_file(photos["back"], output_dir, "back")
-    
+        for role in ("front", "side", "back"):
+            for item in _iter_nonempty(photos.get(role)):
+                path = _write_b64_to_file(item, output_dir, f"{role}")
+                if path:
+                    photo_paths[role].append(path)
+                    break  # only need one from singles per role if present
+
+    # Ranked lists (base64 strings) — keep up to 2 per role
+    if photos_ranked:
+        for role in ("front", "side", "back"):
+            rank_list = list(_iter_nonempty(photos_ranked.get(role)))
+            role_files = []
+            for idx, b64_photo in enumerate(rank_list[:2]):
+                fp = _write_b64_to_file(b64_photo, output_dir, f"{role}_{idx}")
+                if fp:
+                    role_files.append(fp)
+            if role_files:
+                # Prepend ranked results (higher priority)
+                photo_paths[role] = _unique_preserve_order(role_files + photo_paths[role])
+
+    # Cap total number of photos for safety
+    total = sum(len(v) for v in photo_paths.values())
+    if total > MAX_TOTAL_PHOTOS:
+        print(f"[BLENDER] Trimming photos from {total} to {MAX_TOTAL_PHOTOS}")
+        # Flatten in role order, trim, then rebuild
+        flat = []
+        for r in ("front", "side", "back"):
+            for p in photo_paths[r]:
+                flat.append((r, p))
+        flat = flat[:MAX_TOTAL_PHOTOS]
+        # Rebuild
+        photo_paths = {"front": [], "side": [], "back": []}
+        for r, p in flat:
+            photo_paths[r].append(p)
+
+    print("[BLENDER] Photo counts:",
+          {k: len(v) for k, v in photo_paths.items()})
+
     # Build Blender command
     cmd = [
         blender_bin,
         "-b", base_blend,
         "--python", "/app/deform_avatar.py",
-        "--"
+        "--",
+        "--preset", preset,
+        "--height", str(height_m),
+        "--texRes", str(tex_res),
+        "--out", output_file,
     ]
-    
-    # Add core arguments
-    cmd.extend(["--preset", preset])
-    cmd.extend(["--height", str(height_m)])
-    cmd.extend(["--texRes", str(tex_res)])
-    
-    # CRITICAL: Pass output path explicitly
-    cmd.extend(["--out", output_file])
-    
-    # High detail flag
+
     if high_detail:
         cmd.append("--highDetail")
-    
-    # Add measurements (only if not None)
-    measurement_keys = ["chest", "waist", "hips", "shoulder", "inseam", "arm"]
-    for key in measurement_keys:
-        value = measurements.get(key)
-        if value is not None:
-            cmd.extend([f"--{key}", str(value)])
-    
-    # Add single photo paths (from converted files)
-    if photo_files.get("front"):
-        cmd.extend(["--frontTex", photo_files["front"]])
-        print(f"[BLENDER] Front photo: {photo_files['front']}")
-    if photo_files.get("side"):
-        cmd.extend(["--sideTex", photo_files["side"]])
-        print(f"[BLENDER] Side photo: {photo_files['side']}")
-    if photo_files.get("back"):
-        cmd.extend(["--backTex", photo_files["back"]])
-        print(f"[BLENDER] Back photo: {photo_files['back']}")
-    
-    # Handle multi-photo ranked lists (if available)
-    # photos_ranked contains base64 strings, need to convert them
-    if photos_ranked:
-        print(f"[BLENDER] Processing ranked photos...")
-        
-        # Front photos
-        if photos_ranked.get("front") and isinstance(photos_ranked["front"], list):
-            front_files = []
-            for idx, b64_photo in enumerate(photos_ranked["front"][:2]):  # Max 2
-                if isinstance(b64_photo, str):
-                    filepath = _write_b64_to_file(b64_photo, output_dir, f"front_{idx}")
-                    if filepath:
-                        front_files.append(filepath)
-            
-            if front_files:
-                front_list = ";".join(front_files)
-                cmd.extend(["--frontTexList", front_list])
-                print(f"[BLENDER] Front ranked photos: {len(front_files)} images")
-        
-        # Side photos
-        if photos_ranked.get("side") and isinstance(photos_ranked["side"], list):
-            side_files = []
-            for idx, b64_photo in enumerate(photos_ranked["side"][:2]):
-                if isinstance(b64_photo, str):
-                    filepath = _write_b64_to_file(b64_photo, output_dir, f"side_{idx}")
-                    if filepath:
-                        side_files.append(filepath)
-            
-            if side_files:
-                side_list = ";".join(side_files)
-                cmd.extend(["--sideTexList", side_list])
-                print(f"[BLENDER] Side ranked photos: {len(side_files)} images")
-        
-        # Back photos
-        if photos_ranked.get("back") and isinstance(photos_ranked["back"], list):
-            back_files = []
-            for idx, b64_photo in enumerate(photos_ranked["back"][:2]):
-                if isinstance(b64_photo, str):
-                    filepath = _write_b64_to_file(b64_photo, output_dir, f"back_{idx}")
-                    if filepath:
-                        back_files.append(filepath)
-            
-            if back_files:
-                back_list = ";".join(back_files)
-                cmd.extend(["--backTexList", back_list])
-                print(f"[BLENDER] Back ranked photos: {len(back_files)} images")
-    
-    # Handle pose (if auto mode and angles provided)
-    pose_json_path = None
+
+    # Measurements (only if provided)
+    for key in ["chest", "waist", "hips", "shoulder", "inseam", "arm"]:
+        val = (measurements or {}).get(key)
+        if val is not None:
+            cmd.extend([f"--{key}", str(val)])
+
+    # Add multi-photo lists first (semicolon separated), then single fallbacks
+    for role in ("front", "side", "back"):
+        paths = photo_paths[role]
+        if len(paths) >= 2:
+            cmd.extend([f"--{role}TexList", ";".join(paths)])
+        elif len(paths) == 1:
+            cmd.extend([f"--{role}Tex", paths[0]])
+
+    # Pose (apply AFTER bake in deform_avatar.py)
+    pose_json_path = ""
     if pose_mode == "auto" and pose_angles:
         pose_json_path = os.path.join(output_dir, "pose.json")
         try:
-            with open(pose_json_path, 'w') as f:
-                json.dump(pose_angles, f, indent=2)
+            with open(pose_json_path, "w", encoding="utf-8") as f:
+                json.dump(pose_angles, f)
             cmd.extend(["--poseJson", pose_json_path])
-            print(f"[BLENDER] Pose mode enabled with angles: {pose_angles}")
+            print(f"[BLENDER] Pose: auto with {len(pose_angles)} angles")
         except Exception as e:
-            print(f"[BLENDER] Warning: Failed to write pose JSON: {e}")
-    
-    # Set environment variable as backup method
+            print(f"[BLENDER] Warning: failed to write pose JSON: {e}", file=sys.stderr)
+
+    # Environment
     env = os.environ.copy()
     env["OUTPUT_GLTF"] = output_file
-    
-    # Log command (truncated for security)
-    cmd_display = ' '.join(cmd[:10]) + "..." if len(cmd) > 10 else ' '.join(cmd)
-    print(f"[BLENDER] Starting avatar generation: preset={preset}, height={height_m}m, texRes={tex_res}")
-    print(f"[BLENDER] Executing command: {cmd_display}")
-    
-    # Execute Blender with timeout
-    timeout = 300  # 5 minutes
-    print(f"[BLENDER] Timeout set to {timeout}s")
-    
+    env["SDL_AUDIODRIVER"] = "dummy"  # silence ALSA in containers
+
+    # Log command (partially)
+    safe_preview = " ".join(cmd[:14]) + (" ..." if len(cmd) > 14 else "")
+    print(f"[BLENDER] Executing: {safe_preview}")
+
+    # Execute Blender
+    timeout = int(os.environ.get("BLENDER_TIMEOUT", "300"))  # seconds
     try:
         result = subprocess.run(
             cmd,
@@ -247,142 +252,86 @@ def run_blender_avatar(
             capture_output=True,
             text=True,
             timeout=timeout,
-            check=False
+            check=False,
         )
-        
-        # Combine stdout and stderr for log
         log = ""
         if result.stdout:
             log += "=== STDOUT ===\n" + result.stdout + "\n"
         if result.stderr:
             log += "=== STDERR ===\n" + result.stderr + "\n"
-        
-        print(f"[BLENDER] Blender process finished with return code: {result.returncode}")
-        
-        # Check if output file was created
+
+        print(f"[BLENDER] Return code: {result.returncode}")
+
+        # Small FS settle helps avoid rare container races
+        time.sleep(0.2)
+
+        # Validate output file
         if not os.path.exists(output_file):
-            # File not found - detailed error reporting
-            print(f"[BLENDER] ERROR: Output file not found at {output_file}", file=sys.stderr)
-            print(f"[BLENDER] Output directory exists: {os.path.exists(output_dir)}", file=sys.stderr)
-            
-            if os.path.exists(output_dir):
+            print(f"[BLENDER] ERROR: GLB not found at {output_file}", file=sys.stderr)
+            try:
                 dir_contents = os.listdir(output_dir)
-                print(f"[BLENDER] Directory contents: {dir_contents}", file=sys.stderr)
-            else:
-                print(f"[BLENDER] Output directory does not exist!", file=sys.stderr)
-            
-            # Print last 50 lines of output for debugging
-            if result.stdout:
-                stdout_lines = result.stdout.split('\n')
-                print(f"[BLENDER] Last 50 lines of stdout:", file=sys.stderr)
-                for line in stdout_lines[-50:]:
-                    print(f"  {line}", file=sys.stderr)
-            
-            if result.stderr:
-                stderr_lines = result.stderr.split('\n')
-                print(f"[BLENDER] Last 50 lines of stderr:", file=sys.stderr)
-                for line in stderr_lines[-50:]:
-                    print(f"  {line}", file=sys.stderr)
-            
-            return {
+            except Exception:
+                dir_contents = []
+            err = {
                 "ok": False,
-                "error": f"Blender completed with code {result.returncode} but output file not found at {output_file}",
+                "error": f"Blender finished (code {result.returncode}) but GLB missing",
                 "log": log,
                 "returncode": result.returncode,
                 "output_dir": output_dir,
-                "dir_contents": os.listdir(output_dir) if os.path.exists(output_dir) else []
+                "dir_contents": dir_contents,
             }
-        
-        # File exists - read and encode it
-        file_size = os.path.getsize(output_file)
-        print(f"[BLENDER] Success! GLB file created")
-        print(f"[BLENDER] File size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
-        
-        # Verify file is not empty
-        if file_size == 0:
-            return {
-                "ok": False,
-                "error": f"Output file created but is empty (0 bytes)",
-                "log": log
-            }
-        
-        # Read GLB file as binary
+            # keep temp dir for debugging
+            return err
+
+        size = os.path.getsize(output_file)
+        if size == 0:
+            return {"ok": False, "error": "GLB created but empty", "log": log, "returncode": result.returncode}
+
+        # Check GLB header
+        with open(output_file, "rb") as f:
+            header = f.read(4)
+        if header != b"glTF":
+            print(f"[BLENDER] Warning: unexpected file header: {header}", file=sys.stderr)
+
+        # Read + encode
+        with open(output_file, "rb") as f:
+            glb_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # Cleanup on success
         try:
-            with open(output_file, "rb") as f:
-                glb_bytes = f.read()
-        except Exception as e:
-            return {
-                "ok": False,
-                "error": f"Failed to read output file: {str(e)}",
-                "log": log
-            }
-        
-        # Encode to base64
-        try:
-            glb_b64 = base64.b64encode(glb_bytes).decode("utf-8")
-        except Exception as e:
-            return {
-                "ok": False,
-                "error": f"Failed to encode GLB to base64: {str(e)}",
-                "log": log
-            }
-        
-        print(f"[BLENDER] GLB encoded to base64: {len(glb_b64)} characters")
-        
-        # Cleanup temp files
-        try:
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
-            print("[BLENDER] Temp files cleaned up")
-        except Exception as e:
-            print(f"[BLENDER] Warning: Cleanup failed: {e}")
-        
-        # Return success
+            shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "glb_b64": glb_b64,
             "log": log,
-            "file_size": file_size,
-            "returncode": result.returncode
+            "file_size": size,
+            "returncode": result.returncode,
         }
-        
+
     except subprocess.TimeoutExpired as e:
-        error_msg = f"Blender execution timed out after {timeout} seconds"
+        error_msg = f"Blender execution timed out after {timeout}s"
         print(f"[BLENDER] ERROR: {error_msg}", file=sys.stderr)
-        
-        # Try to get partial output
         partial_log = ""
-        if hasattr(e, 'stdout') and e.stdout:
+        if getattr(e, "stdout", None):
             partial_log += "=== PARTIAL STDOUT ===\n" + e.stdout + "\n"
-        if hasattr(e, 'stderr') and e.stderr:
+        if getattr(e, "stderr", None):
             partial_log += "=== PARTIAL STDERR ===\n" + e.stderr + "\n"
-        
-        # Cleanup on timeout
+        # try to clean
         try:
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
+            shutil.rmtree(output_dir, ignore_errors=True)
         except Exception:
             pass
-        
-        return {
-            "ok": False,
-            "error": error_msg,
-            "log": partial_log or "Process timed out before producing output"
-        }
-        
+        return {"ok": False, "error": error_msg, "log": partial_log}
+
     except Exception as e:
-        error_msg = f"Unexpected error during Blender execution: {str(e)}"
-        print(f"[BLENDER] ERROR: {error_msg}", file=sys.stderr)
-        
-        # Cleanup on error
+        err = f"Unexpected error during Blender execution: {e}"
+        print(f"[BLENDER] ERROR: {err}", file=sys.stderr)
+        # try to clean
         try:
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
+            shutil.rmtree(output_dir, ignore_errors=True)
         except Exception:
             pass
-        
-        return {
-            "ok": False,
-            "error": error_msg,
-            "log": str(e)
-        }
+        return {"ok": False, "error": err, "log": str(e)}
