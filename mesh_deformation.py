@@ -1,254 +1,295 @@
 #!/usr/bin/env python3
 """
-mesh_deformation.py - Mesh and armature manipulation functions
+mesh_deformation_fixed.py
 
-Handles:
-- Mesh creation and UV mapping
-- Armature generation and rigging
-- Pose application
-- Body proportions/scaling
-- FaceMask attribute generation
+Add these functions to your mesh_deformation.py file to fix the verification issues.
 """
 
 import bpy
-import math
-import numpy as np
-from typing import Optional, Dict
-
-
-def to_object_mode():
-    """Safely switch to Object mode."""
-    try:
-        if bpy.context.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-    except Exception:
-        pass
-
-
-def get_main_mesh():
-    """Get or create the main mesh object."""
-    meshes = [o for o in bpy.data.objects if o.type == "MESH"]
-    if not meshes:
-        print("[MESH] No mesh found; creating UV sphere.")
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0)
-        return bpy.context.active_object
-    return meshes[0]
-
-
-def ensure_uv_map(obj):
-    """Ensure the mesh has UV coordinates."""
-    to_object_mode()
-    if not obj.data.uv_layers:
-        print("[MESH] Creating UV map...")
-        try:
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.uv.smart_project(angle_limit=66)
-        finally:
-            to_object_mode()
-        print("[MESH] ✓ UV map created")
-
-
-def set_body_proportions(obj, height_m: float):
-    """
-    Apply basic body scaling based on height.
-    
-    Args:
-        obj: The mesh object
-        height_m: Target height in meters
-    """
-    scale = max(0.2, float(height_m) / 1.75)
-    obj.scale = (scale, scale, scale)
-    print(f"[MESH] Body scale set to {scale:.3f} (height: {height_m:.2f}m)")
-
-
-def make_facemask_attribute(obj, name: str = "FaceMask") -> str:
-    """
-    Create a vertex attribute for face region masking.
-    
-    This attribute is used to blend front-facing textures with the body.
-    Values: 0.0 (body) to 1.0 (face region)
-    
-    Args:
-        obj: The mesh object
-        name: Attribute name
-        
-    Returns:
-        The attribute name
-    """
-    if obj.data.attributes.get(name):
-        print(f"[MESH] FaceMask attribute '{name}' already exists")
-        return name
-    
-    print("[MESH] Building FaceMask attribute...")
-    attr = obj.data.attributes.new(name=name, type='FLOAT', domain='POINT')
-    verts = obj.data.vertices
-    
-    if not verts:
-        return name
-    
-    # Analyze mesh geometry
-    zs = np.array([v.co.z for v in verts], dtype=np.float32)
-    z_min, z_max = float(zs.min()), float(zs.max())
-    z_low = z_min + 0.65 * (z_max - z_min)
-    z_high = z_min + 0.95 * (z_max - z_min)
-    
-    obj.data.calc_normals()
-    vals = np.zeros(len(verts), dtype=np.float32)
-    
-    # Calculate face mask values
-    for i, v in enumerate(verts):
-        ny = v.normal.y
-        z = v.co.z
-        
-        # Head band (vertical position)
-        head_band = 0.0
-        if z >= z_low:
-            head_band = min(1.0, max(0.0, (z - z_low) / max(1e-6, (z_high - z_low))))
-        
-        # Front-facing (normal direction)
-        frontness = 1.0 if ny < -0.15 else 0.0
-        
-        vals[i] = float(head_band * frontness)
-    
-    # Normalize and apply gamma for smoother falloff
-    if vals.max() > 0:
-        vals = (vals / vals.max()) ** 0.7
-    
-    for i, d in enumerate(attr.data):
-        d.value = float(vals[i])
-    
-    print(f"[MESH] ✓ FaceMask created: {len(verts)} vertices")
-    return name
-
-
-def ensure_basic_armature(body_obj):
-    """
-    Create a simple armature for posing if one doesn't exist.
-    
-    Args:
-        body_obj: The body mesh to rig
-        
-    Returns:
-        The armature object
-    """
-    arm = next((o for o in bpy.data.objects if o.type == 'ARMATURE'), None)
-    if arm:
-        print("[MESH] Using existing armature")
-        return arm
-    
-    print("[MESH] Creating basic armature...")
-    bpy.ops.object.select_all(action='DESELECT')
-    bpy.ops.object.armature_add(enter_editmode=True)
-    arm = bpy.context.active_object
-    arm.name = "Armature"
-    
-    eb = arm.data.edit_bones
-    
-    # Spine
-    spine = eb[0]
-    spine.name = "spine"
-    spine.head = (0, 0, 0.9)
-    spine.tail = (0, 0, 1.4)
-    
-    # Head
-    head = eb.new("head")
-    head.head = spine.tail
-    head.tail = (0, 0, 1.7)
-    
-    # Left arm
-    l_up = eb.new("upper_arm.L")
-    l_up.head = (0.05, 0, 1.35)
-    l_up.tail = (0.35, 0, 1.35)
-    
-    l_fk = eb.new("forearm.L")
-    l_fk.head = l_up.tail
-    l_fk.tail = (0.55, 0, 1.30)
-    
-    # Right arm
-    r_up = eb.new("upper_arm.R")
-    r_up.head = (-0.05, 0, 1.35)
-    r_up.tail = (-0.35, 0, 1.35)
-    
-    r_fk = eb.new("forearm.R")
-    r_fk.head = r_up.tail
-    r_fk.tail = (-0.55, 0, 1.30)
-    
-    to_object_mode()
-    
-    # Parent mesh to armature
-    bpy.context.view_layer.objects.active = body_obj
-    body_obj.select_set(True)
-    arm.select_set(True)
-    bpy.ops.object.parent_set(type='ARMATURE_AUTO')
-    body_obj.select_set(False)
-    arm.select_set(False)
-    
-    print("[MESH] ✓ Armature created and rigged")
-    return arm
-
-
-def apply_pose_from_angles(arm, angles: Dict[str, Optional[float]]):
-    """
-    Apply pose to armature from angle dictionary.
-    
-    Args:
-        arm: The armature object
-        angles: Dictionary with keys like 'left_elbow', 'right_shoulder_abd', 'head_yaw'
-    """
-    if not angles:
-        return
-    
-    print(f"[MESH] Applying pose with {len(angles)} angles...")
-    bpy.context.view_layer.objects.active = arm
-    bpy.ops.object.mode_set(mode='POSE')
-    pb = arm.pose.bones
-    
-    def rot_deg(name: str, axis: str, deg: Optional[float]):
-        """Set bone rotation in degrees."""
-        if name not in pb or deg is None:
-            return
-        
-        b = pb[name]
-        b.rotation_mode = 'XYZ'
-        e = list(b.rotation_euler)
-        ax = {"X": 0, "Y": 1, "Z": 2}[axis]
-        d = max(-120.0, min(120.0, float(deg)))
-        e[ax] = math.radians(d)
-        b.rotation_euler = e
-    
-    # Apply rotations
-    rot_deg("upper_arm.L", "Z", angles.get("left_shoulder_abd"))
-    rot_deg("upper_arm.R", "Z", -angles.get("right_shoulder_abd", 0.0))
-    rot_deg("forearm.L", "Y", -(180.0 - angles.get("left_elbow", 180.0)))
-    rot_deg("forearm.R", "Y", (180.0 - angles.get("right_elbow", 180.0)))
-    rot_deg("head", "Z", angles.get("head_yaw"))
-    
-    to_object_mode()
-    print("[MESH] ✓ Pose applied")
+import bmesh
 
 
 def verify_mesh_ready(obj) -> bool:
     """
-    Verify mesh is ready for texture baking.
+    IMPROVED VERSION: Verify mesh is ready for export with detailed logging.
+    
+    This replaces the existing verify_mesh_ready() function.
     
     Returns:
-        True if ready, False otherwise
+        bool: True if mesh is valid, False otherwise
     """
-    checks = {
-        "Has UV map": bool(obj.data.uv_layers),
-        "Has material": bool(obj.data.materials),
-        "Has geometry": bool(obj.data.vertices),
+    print("\n[MESH_VERIFY] Starting mesh verification...")
+    
+    if not obj or not obj.data:
+        print("[MESH_VERIFY] ✗ Object or mesh data is None")
+        return False
+    
+    me = obj.data
+    errors = []
+    warnings = []
+    
+    # Check 1: Vertices
+    vert_count = len(me.vertices)
+    print(f"[MESH_VERIFY] Vertices: {vert_count}")
+    if vert_count == 0:
+        errors.append("No vertices")
+        print("[MESH_VERIFY] ✗ No vertices in mesh")
+        return False
+    
+    # Check 2: Faces
+    face_count = len(me.polygons)
+    print(f"[MESH_VERIFY] Faces: {face_count}")
+    if face_count == 0:
+        errors.append("No faces")
+        print("[MESH_VERIFY] ✗ No faces in mesh")
+        return False
+    
+    # Check 3: UV Map (CRITICAL for texture baking)
+    if not me.uv_layers or len(me.uv_layers) == 0:
+        errors.append("No UV map found")
+        print("[MESH_VERIFY] ✗ No UV map - creating default...")
+        
+        # Auto-fix: Create UV map if missing
+        try:
+            if not me.uv_layers:
+                me.uv_layers.new(name="UVMap")
+                print("[MESH_VERIFY] ✓ Created default UV map")
+            
+            # Smart UV unwrap
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
+            bpy.ops.object.mode_set(mode='OBJECT')
+            print("[MESH_VERIFY] ✓ Auto-unwrapped UVs")
+        except Exception as e:
+            print(f"[MESH_VERIFY] ✗ Failed to create UV map: {e}")
+            return False
+    else:
+        print(f"[MESH_VERIFY] ✓ UV layers: {len(me.uv_layers)}")
+    
+    # Check 4: Materials
+    if not me.materials or len(me.materials) == 0:
+        warnings.append("No materials assigned")
+        print("[MESH_VERIFY] ⚠ No materials - will create default")
+        
+        # Auto-fix: Create basic material
+        mat = bpy.data.materials.new(name="DefaultMaterial")
+        mat.use_nodes = True
+        if len(me.materials) == 0:
+            me.materials.append(mat)
+        else:
+            me.materials[0] = mat
+        print("[MESH_VERIFY] ✓ Created default material")
+    else:
+        print(f"[MESH_VERIFY] Materials: {len(me.materials)}")
+        for i, mat in enumerate(me.materials):
+            if mat is None:
+                errors.append(f"Material slot {i} is empty")
+                print(f"[MESH_VERIFY] ✗ Material slot {i} is empty")
+            else:
+                print(f"[MESH_VERIFY]   [{i}] {mat.name} (nodes: {mat.use_nodes})")
+    
+    # Check 5: Degenerate geometry
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(me)
+    
+    degenerate_count = 0
+    for face in bm.faces:
+        if face.calc_area() < 1e-6:
+            degenerate_count += 1
+    
+    if degenerate_count > 0:
+        warnings.append(f"{degenerate_count} degenerate faces")
+        print(f"[MESH_VERIFY] ⚠ Found {degenerate_count} degenerate faces")
+        
+        # Auto-fix: Remove degenerate geometry
+        try:
+            bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-4)
+            bmesh.update_edit_mesh(me)
+            print("[MESH_VERIFY] ✓ Dissolved degenerate geometry")
+        except Exception as e:
+            print(f"[MESH_VERIFY] ⚠ Could not dissolve degenerate geometry: {e}")
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Check 6: Non-manifold geometry
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.mesh.select_non_manifold()
+    
+    # Get selected count
+    bm = bmesh.from_edit_mesh(me)
+    non_manifold_verts = [v for v in bm.verts if v.select]
+    non_manifold_count = len(non_manifold_verts)
+    
+    if non_manifold_count > 0:
+        warnings.append(f"{non_manifold_count} non-manifold vertices")
+        print(f"[MESH_VERIFY] ⚠ Found {non_manifold_count} non-manifold vertices")
+        
+        # Don't auto-fix non-manifold - just warn
+        # Non-manifold geometry can sometimes be intentional
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Check 7: Normals
+    has_custom_normals = me.has_custom_normals
+    print(f"[MESH_VERIFY] Custom normals: {has_custom_normals}")
+    
+    # Summary
+    print(f"\n[MESH_VERIFY] Verification complete:")
+    print(f"[MESH_VERIFY]   Errors: {len(errors)}")
+    print(f"[MESH_VERIFY]   Warnings: {len(warnings)}")
+    
+    if errors:
+        print("[MESH_VERIFY] ERRORS:")
+        for err in errors:
+            print(f"[MESH_VERIFY]   ✗ {err}")
+        return False
+    
+    if warnings:
+        print("[MESH_VERIFY] WARNINGS:")
+        for warn in warnings:
+            print(f"[MESH_VERIFY]   ⚠ {warn}")
+    
+    print("[MESH_VERIFY] ✓ Mesh is ready for export")
+    return True
+
+
+def ensure_uv_map(obj):
+    """
+    IMPROVED VERSION: Ensure mesh has a UV map.
+    
+    Creates and unwraps if missing.
+    """
+    me = obj.data
+    
+    if not me.uv_layers or len(me.uv_layers) == 0:
+        print("[MESH] Creating UV map...")
+        me.uv_layers.new(name="UVMap")
+        
+        # Unwrap
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
+        bpy.ops.object.mode_set(mode='OBJECT')
+        print("[MESH] ✓ UV map created and unwrapped")
+    else:
+        print(f"[MESH] ✓ UV map exists: {me.uv_layers[0].name}")
+
+
+def clean_mesh(obj):
+    """
+    Clean mesh geometry to prevent export issues.
+    
+    Removes:
+    - Degenerate faces (zero area)
+    - Loose vertices
+    - Duplicate vertices
+    - Zero-length edges
+    """
+    print("[MESH] Cleaning mesh geometry...")
+    
+    me = obj.data
+    bpy.context.view_layer.objects.active = obj
+    
+    # Switch to edit mode
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(me)
+    
+    initial_verts = len(bm.verts)
+    initial_faces = len(bm.faces)
+    
+    # Remove degenerate geometry
+    try:
+        bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-4)
+        print("[MESH]   ✓ Dissolved degenerate geometry")
+    except Exception as e:
+        print(f"[MESH]   ⚠ Could not dissolve degenerate: {e}")
+    
+    # Remove duplicate vertices
+    try:
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
+        print("[MESH]   ✓ Removed duplicate vertices")
+    except Exception as e:
+        print(f"[MESH]   ⚠ Could not remove doubles: {e}")
+    
+    # Delete loose vertices
+    try:
+        loose_verts = [v for v in bm.verts if not v.link_faces]
+        bmesh.ops.delete(bm, geom=loose_verts, context='VERTS')
+        print(f"[MESH]   ✓ Removed {len(loose_verts)} loose vertices")
+    except Exception as e:
+        print(f"[MESH]   ⚠ Could not remove loose vertices: {e}")
+    
+    bmesh.update_edit_mesh(me)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    final_verts = len(me.vertices)
+    final_faces = len(me.polygons)
+    
+    print(f"[MESH] Cleaning complete:")
+    print(f"[MESH]   Vertices: {initial_verts} → {final_verts}")
+    print(f"[MESH]   Faces: {initial_faces} → {final_faces}")
+
+
+def diagnose_mesh_issues(obj):
+    """
+    Comprehensive mesh diagnosis for debugging.
+    
+    Returns dict with all mesh properties.
+    """
+    me = obj.data
+    
+    diag = {
+        "name": obj.name,
+        "type": obj.type,
+        "vertices": len(me.vertices),
+        "edges": len(me.edges),
+        "faces": len(me.polygons),
+        "uv_layers": len(me.uv_layers) if me.uv_layers else 0,
+        "materials": len(me.materials),
+        "vertex_groups": len(obj.vertex_groups),
     }
     
-    all_ok = all(checks.values())
+    # Check for issues
+    issues = []
     
-    if not all_ok:
-        print("[MESH] ✗ Mesh verification failed:")
-        for check, passed in checks.items():
-            status = "✓" if passed else "✗"
-            print(f"  {status} {check}")
-    else:
-        print("[MESH] ✓ Mesh ready for baking")
+    if diag["vertices"] == 0:
+        issues.append("No vertices")
+    if diag["faces"] == 0:
+        issues.append("No faces")
+    if diag["uv_layers"] == 0:
+        issues.append("No UV layers")
+    if diag["materials"] == 0:
+        issues.append("No materials")
     
-    return all_ok
+    # Check degenerate faces
+    degenerate = sum(1 for p in me.polygons if p.area < 1e-6)
+    if degenerate > 0:
+        issues.append(f"{degenerate} degenerate faces")
+    
+    diag["issues"] = issues
+    
+    return diag
+
+
+# Example usage in your main script:
+"""
+# After creating the mesh
+obj = get_main_mesh()
+
+# Clean it first
+clean_mesh(obj)
+
+# Ensure UV map
+ensure_uv_map(obj)
+
+# Verify before export
+if not verify_mesh_ready(obj):
+    # Print diagnostics
+    diag = diagnose_mesh_issues(obj)
+    print(f"Mesh diagnosis: {diag}")
+    sys.exit(1)
+"""
