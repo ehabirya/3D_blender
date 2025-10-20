@@ -399,32 +399,104 @@ def merge_measurements(photo_measurements: Dict[str, Optional[float]],
 
 
 def validate_measurement_sanity(measurements: Dict[str, Optional[float]],
-                                height_m: float) -> Dict[str, Optional[float]]:
+                                height_m: float,
+                                use_defaults: bool = True) -> Dict[str, Optional[float]]:
     """
     Validate measurements are physically reasonable.
     
-    ENHANCED: Added validation ranges for foot measurements.
+    FIXED:
+    - Relaxed validation ranges to accept normal human variation
+    - Added default fallback values when measurements are unreasonable
+    - Better logging to show what's happening
+    
+    Args:
+        measurements: Dict of measurements to validate
+        height_m: Reference height in meters
+        use_defaults: If True, use proportional defaults for unreasonable values
+        
+    Returns:
+        Dict with validated measurements (None or default for unreasonable values)
     """
     validated = measurements.copy()
     
+    # FIXED: More realistic ranges accounting for human variation
     reasonable_ranges = {
-        'shoulder': (0.20, 0.30),
-        'chest': (0.45, 0.65),
-        'waist': (0.40, 0.60),
-        'hips': (0.45, 0.65),
-        'inseam': (0.40, 0.52),
-        'arm': (0.35, 0.45),
-        'foot_length': (0.12, 0.18),  # NEW: Foot length typically 12-18% of height
-        'foot_width': (0.04, 0.08),   # NEW: Foot width typically 4-8% of height
+        'shoulder': (0.18, 0.32),      # 18-32% (was 20-30%)
+        'chest': (0.42, 0.68),          # 42-68% (was 45-65%)
+        'waist': (0.30, 0.58),          # 30-58% (was 40-60%) - allows slim builds
+        'hips': (0.38, 0.65),           # 38-65% (was 45-65%) - allows slim builds
+        'inseam': (0.40, 0.50),         # 40-50% (was 40-52%) - tightened upper bound
+        'arm': (0.34, 0.46),            # 34-46% (was 35-45%)
+        'foot_length': (0.13, 0.17),    # 13-17% (was 12-18%)
+        'foot_width': (0.04, 0.07),     # 4-7% (was 4-8%)
     }
+    
+    # Default proportions for fallback (based on average human proportions)
+    default_proportions = {
+        'shoulder': 0.25,
+        'chest': 0.52,
+        'waist': 0.42,
+        'hips': 0.50,
+        'inseam': 0.45,
+        'arm': 0.38,
+        'foot_length': 0.15,
+        'foot_width': 0.055,
+    }
+    
+    print("\n[MEASURE] Validating measurements:")
     
     for key, (min_ratio, max_ratio) in reasonable_ranges.items():
         value = validated.get(key)
-        if value is not None and value > 0:
-            ratio = value / height_m
-            if ratio < min_ratio or ratio > max_ratio:
-                print(f"[MEASURE] ⚠ {key} = {value:.3f}m "
-                      f"({ratio*100:.1f}% of height) is unreasonable, discarding")
+        
+        if value is None or value <= 0:
+            if use_defaults:
+                validated[key] = height_m * default_proportions[key]
+                print(f"[MEASURE] {key}: None → using default {validated[key]:.3f}m "
+                      f"({default_proportions[key]*100:.1f}% of height)")
+            else:
+                print(f"[MEASURE] {key}: None (no data)")
+            continue
+        
+        ratio = value / height_m
+        
+        if ratio < min_ratio or ratio > max_ratio:
+            print(f"[MEASURE] ⚠ {key} = {value:.3f}m ({ratio*100:.1f}% of height) "
+                  f"is unreasonable (valid range: {min_ratio*100:.1f}-{max_ratio*100:.1f}%)")
+            
+            if use_defaults:
+                # Use proportional default instead of None
+                validated[key] = height_m * default_proportions[key]
+                print(f"[MEASURE]   → Replacing with default {validated[key]:.3f}m "
+                      f"({default_proportions[key]*100:.1f}% of height)")
+            else:
                 validated[key] = None
+                print(f"[MEASURE]   → Discarding (set to None)")
+        else:
+            print(f"[MEASURE] {key}: {value:.3f}m ✓ ({ratio*100:.1f}% of height)")
     
     return validated
+
+
+
+def get_default_measurement(measurement_name: str, height_m: float) -> float:
+    """
+    Get a reasonable default value for a measurement based on height.
+    
+    NEW FUNCTION: Provides fallback values when measurements fail.
+    """
+    default_proportions = {
+        'shoulder': 0.25,
+        'chest': 0.52,
+        'waist': 0.42,
+        'hips': 0.50,
+        'inseam': 0.45,
+        'arm': 0.38,
+        'foot_length': 0.15,
+        'foot_width': 0.055,
+        'neck': 0.20,
+        'head': 0.35,
+        'hand': 0.10,
+    }
+    
+    proportion = default_proportions.get(measurement_name, 0.3)
+    return height_m * proportion
