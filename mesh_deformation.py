@@ -1,295 +1,279 @@
 #!/usr/bin/env python3
 """
-mesh_deformation_fixed.py
+COMPLETE FIX for mesh_deformation.py
 
-Add these functions to your mesh_deformation.py file to fix the verification issues.
+Replace your existing ensure_uv_map() and verify_mesh_ready() with these versions.
 """
 
 import bpy
 import bmesh
 
 
+def ensure_uv_map(obj):
+    """
+    Ensure the mesh has UV coordinates with proper error handling.
+    
+    FIXES:
+    - Actually creates UV layer if missing
+    - Verifies the unwrap succeeded
+    - Provides detailed error messages
+    - Raises exception on failure instead of silent fail
+    """
+    to_object_mode()
+    
+    # Check if UV already exists
+    if obj.data.uv_layers and len(obj.data.uv_layers) > 0:
+        print(f"[MESH] ✓ UV map exists: '{obj.data.uv_layers[0].name}'")
+        return
+    
+    print("[MESH] No UV map found, creating...")
+    
+    # Verify mesh has geometry
+    vert_count = len(obj.data.vertices)
+    face_count = len(obj.data.polygons)
+    
+    if vert_count == 0 or face_count == 0:
+        error_msg = f"Cannot create UV map: mesh has no geometry (verts={vert_count}, faces={face_count})"
+        print(f"[MESH] ✗ {error_msg}")
+        raise ValueError(error_msg)
+    
+    print(f"[MESH] Mesh geometry: {vert_count} verts, {face_count} faces")
+    
+    try:
+        # Create UV layer explicitly
+        if not obj.data.uv_layers:
+            print("[MESH] Creating UV layer...")
+            uv_layer = obj.data.uv_layers.new(name="UVMap")
+            print(f"[MESH] ✓ UV layer '{uv_layer.name}' created")
+        
+        # Set as active
+        obj.data.uv_layers.active = obj.data.uv_layers[0]
+        
+        # Ensure object is active in context
+        bpy.context.view_layer.objects.active = obj
+        
+        # Switch to edit mode for unwrapping
+        print("[MESH] Switching to edit mode for UV unwrap...")
+        bpy.ops.object.mode_set(mode='EDIT')
+        
+        # Select all geometry
+        bpy.ops.mesh.select_all(action='SELECT')
+        
+        # Unwrap with smart project
+        print("[MESH] Running smart UV project...")
+        result = bpy.ops.uv.smart_project(
+            angle_limit=66.0,
+            island_margin=0.02,
+            area_weight=0.0,
+            correct_aspect=True,
+            scale_to_bounds=False
+        )
+        
+        print(f"[MESH] Smart project result: {result}")
+        
+        # Switch back to object mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
+    except Exception as e:
+        # Make sure we're back in object mode
+        try:
+            if bpy.context.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+        except:
+            pass
+        
+        error_msg = f"UV unwrap failed: {e}"
+        print(f"[MESH] ✗ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        raise RuntimeError(error_msg)
+    
+    # CRITICAL: Verify UV map was actually created and has data
+    if not obj.data.uv_layers or len(obj.data.uv_layers) == 0:
+        error_msg = "UV map verification failed: No UV layers exist after unwrap"
+        print(f"[MESH] ✗ {error_msg}")
+        raise RuntimeError(error_msg)
+    
+    uv_count = len(obj.data.uv_layers[0].data)
+    print(f"[MESH] ✓ UV map created successfully: {uv_count} UV coordinates")
+    
+    if uv_count == 0:
+        error_msg = "UV map verification failed: UV layer is empty"
+        print(f"[MESH] ✗ {error_msg}")
+        raise RuntimeError(error_msg)
+
+
 def verify_mesh_ready(obj) -> bool:
     """
-    IMPROVED VERSION: Verify mesh is ready for export with detailed logging.
+    Verify mesh is ready for texture baking with detailed diagnostics and auto-fixing.
     
-    This replaces the existing verify_mesh_ready() function.
+    IMPROVEMENTS:
+    - Shows WHICH check failed with details
+    - Auto-fixes common issues (missing UV, empty material slots)
+    - Provides actionable error messages
+    - Returns detailed failure information
     
     Returns:
-        bool: True if mesh is valid, False otherwise
+        True if ready, False otherwise
     """
-    print("\n[MESH_VERIFY] Starting mesh verification...")
+    print("\n" + "=" * 80)
+    print("[MESH_VERIFY] DETAILED MESH VERIFICATION")
+    print("=" * 80)
     
     if not obj or not obj.data:
-        print("[MESH_VERIFY] ✗ Object or mesh data is None")
+        print("[MESH_VERIFY] ✗ FATAL: Object or mesh data is None!")
         return False
     
     me = obj.data
     errors = []
     warnings = []
     
-    # Check 1: Vertices
+    # ===== CHECK 1: GEOMETRY =====
+    print("\n[MESH_VERIFY] Check 1: Geometry")
     vert_count = len(me.vertices)
-    print(f"[MESH_VERIFY] Vertices: {vert_count}")
-    if vert_count == 0:
-        errors.append("No vertices")
-        print("[MESH_VERIFY] ✗ No vertices in mesh")
-        return False
-    
-    # Check 2: Faces
     face_count = len(me.polygons)
-    print(f"[MESH_VERIFY] Faces: {face_count}")
-    if face_count == 0:
-        errors.append("No faces")
-        print("[MESH_VERIFY] ✗ No faces in mesh")
-        return False
+    edge_count = len(me.edges)
     
-    # Check 3: UV Map (CRITICAL for texture baking)
+    print(f"[MESH_VERIFY]   Vertices: {vert_count}")
+    print(f"[MESH_VERIFY]   Edges: {edge_count}")
+    print(f"[MESH_VERIFY]   Faces: {face_count}")
+    
+    if vert_count == 0:
+        errors.append("No vertices in mesh")
+        print("[MESH_VERIFY]   ✗ No vertices!")
+    elif face_count == 0:
+        errors.append("No faces in mesh")
+        print("[MESH_VERIFY]   ✗ No faces!")
+    else:
+        print("[MESH_VERIFY]   ✓ Geometry OK")
+    
+    # ===== CHECK 2: UV MAP =====
+    print("\n[MESH_VERIFY] Check 2: UV Map")
+    
     if not me.uv_layers or len(me.uv_layers) == 0:
-        errors.append("No UV map found")
-        print("[MESH_VERIFY] ✗ No UV map - creating default...")
+        print("[MESH_VERIFY]   ✗ No UV layers found!")
+        print("[MESH_VERIFY]   Auto-fixing: Creating UV map...")
         
-        # Auto-fix: Create UV map if missing
         try:
-            if not me.uv_layers:
-                me.uv_layers.new(name="UVMap")
-                print("[MESH_VERIFY] ✓ Created default UV map")
+            # Create UV layer
+            uv_layer = me.uv_layers.new(name="UVMap")
+            print(f"[MESH_VERIFY]   Created UV layer: '{uv_layer.name}'")
             
-            # Smart UV unwrap
+            # Unwrap
             bpy.context.view_layer.objects.active = obj
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
             bpy.ops.object.mode_set(mode='OBJECT')
-            print("[MESH_VERIFY] ✓ Auto-unwrapped UVs")
+            
+            # Verify
+            if me.uv_layers and len(me.uv_layers) > 0:
+                uv_count = len(me.uv_layers[0].data)
+                print(f"[MESH_VERIFY]   ✓ UV map created: {uv_count} coordinates")
+            else:
+                errors.append("UV map creation failed")
+                print("[MESH_VERIFY]   ✗ UV map creation FAILED")
+                
         except Exception as e:
-            print(f"[MESH_VERIFY] ✗ Failed to create UV map: {e}")
-            return False
+            errors.append(f"UV map creation error: {e}")
+            print(f"[MESH_VERIFY]   ✗ Exception: {e}")
+            
     else:
-        print(f"[MESH_VERIFY] ✓ UV layers: {len(me.uv_layers)}")
-    
-    # Check 4: Materials
-    if not me.materials or len(me.materials) == 0:
-        warnings.append("No materials assigned")
-        print("[MESH_VERIFY] ⚠ No materials - will create default")
+        uv_count = len(me.uv_layers[0].data)
+        print(f"[MESH_VERIFY]   ✓ UV layers: {len(me.uv_layers)}")
+        print(f"[MESH_VERIFY]   ✓ Active layer: '{me.uv_layers[0].name}'")
+        print(f"[MESH_VERIFY]   ✓ UV coordinates: {uv_count}")
         
-        # Auto-fix: Create basic material
-        mat = bpy.data.materials.new(name="DefaultMaterial")
-        mat.use_nodes = True
-        if len(me.materials) == 0:
+        if uv_count == 0:
+            warnings.append("UV layer exists but has no coordinates")
+            print("[MESH_VERIFY]   ⚠ UV layer is empty!")
+    
+    # ===== CHECK 3: MATERIALS =====
+    print("\n[MESH_VERIFY] Check 3: Materials")
+    
+    if not me.materials or len(me.materials) == 0:
+        print("[MESH_VERIFY]   ✗ No material slots!")
+        print("[MESH_VERIFY]   Auto-fixing: Creating default material...")
+        
+        try:
+            # Create basic material
+            mat = bpy.data.materials.new(name="DefaultMaterial")
+            mat.use_nodes = True
+            
+            # Assign to mesh
             me.materials.append(mat)
-        else:
-            me.materials[0] = mat
-        print("[MESH_VERIFY] ✓ Created default material")
+            
+            print(f"[MESH_VERIFY]   ✓ Created material: '{mat.name}'")
+            
+        except Exception as e:
+            errors.append(f"Material creation failed: {e}")
+            print(f"[MESH_VERIFY]   ✗ Exception: {e}")
+            
     else:
-        print(f"[MESH_VERIFY] Materials: {len(me.materials)}")
+        print(f"[MESH_VERIFY]   Material slots: {len(me.materials)}")
+        
         for i, mat in enumerate(me.materials):
             if mat is None:
-                errors.append(f"Material slot {i} is empty")
-                print(f"[MESH_VERIFY] ✗ Material slot {i} is empty")
+                errors.append(f"Material slot {i} is empty (None)")
+                print(f"[MESH_VERIFY]   ✗ Slot {i}: EMPTY (None)")
             else:
-                print(f"[MESH_VERIFY]   [{i}] {mat.name} (nodes: {mat.use_nodes})")
+                node_info = f"nodes={mat.use_nodes}" if mat.use_nodes else "no nodes"
+                print(f"[MESH_VERIFY]   ✓ Slot {i}: '{mat.name}' ({node_info})")
+                
+                # Check if material has texture nodes
+                if mat.use_nodes:
+                    tex_nodes = [n for n in mat.node_tree.nodes if n.type == 'TEX_IMAGE']
+                    print(f"[MESH_VERIFY]       Texture nodes: {len(tex_nodes)}")
     
-    # Check 5: Degenerate geometry
-    bpy.ops.object.mode_set(mode='EDIT')
-    bm = bmesh.from_edit_mesh(me)
+    # ===== CHECK 4: MESH QUALITY =====
+    print("\n[MESH_VERIFY] Check 4: Mesh Quality")
     
-    degenerate_count = 0
-    for face in bm.faces:
-        if face.calc_area() < 1e-6:
-            degenerate_count += 1
-    
+    # Check for degenerate faces
+    degenerate_count = sum(1 for p in me.polygons if p.area < 1e-6)
     if degenerate_count > 0:
-        warnings.append(f"{degenerate_count} degenerate faces")
-        print(f"[MESH_VERIFY] ⚠ Found {degenerate_count} degenerate faces")
-        
-        # Auto-fix: Remove degenerate geometry
-        try:
-            bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-4)
-            bmesh.update_edit_mesh(me)
-            print("[MESH_VERIFY] ✓ Dissolved degenerate geometry")
-        except Exception as e:
-            print(f"[MESH_VERIFY] ⚠ Could not dissolve degenerate geometry: {e}")
+        warnings.append(f"{degenerate_count} degenerate faces (area < 1e-6)")
+        print(f"[MESH_VERIFY]   ⚠ Degenerate faces: {degenerate_count}")
+    else:
+        print(f"[MESH_VERIFY]   ✓ No degenerate faces")
     
-    bpy.ops.object.mode_set(mode='OBJECT')
+    # Check for loose vertices
+    loose_verts = sum(1 for v in me.vertices if len(v.link_edges) == 0)
+    if loose_verts > 0:
+        warnings.append(f"{loose_verts} loose vertices")
+        print(f"[MESH_VERIFY]   ⚠ Loose vertices: {loose_verts}")
+    else:
+        print(f"[MESH_VERIFY]   ✓ No loose vertices")
     
-    # Check 6: Non-manifold geometry
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.mesh.select_all(action='DESELECT')
-    bpy.ops.mesh.select_non_manifold()
-    
-    # Get selected count
-    bm = bmesh.from_edit_mesh(me)
-    non_manifold_verts = [v for v in bm.verts if v.select]
-    non_manifold_count = len(non_manifold_verts)
-    
-    if non_manifold_count > 0:
-        warnings.append(f"{non_manifold_count} non-manifold vertices")
-        print(f"[MESH_VERIFY] ⚠ Found {non_manifold_count} non-manifold vertices")
-        
-        # Don't auto-fix non-manifold - just warn
-        # Non-manifold geometry can sometimes be intentional
-    
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    # Check 7: Normals
-    has_custom_normals = me.has_custom_normals
-    print(f"[MESH_VERIFY] Custom normals: {has_custom_normals}")
-    
-    # Summary
-    print(f"\n[MESH_VERIFY] Verification complete:")
-    print(f"[MESH_VERIFY]   Errors: {len(errors)}")
-    print(f"[MESH_VERIFY]   Warnings: {len(warnings)}")
+    # ===== SUMMARY =====
+    print("\n" + "=" * 80)
+    print("[MESH_VERIFY] VERIFICATION SUMMARY")
+    print("=" * 80)
+    print(f"[MESH_VERIFY] Errors: {len(errors)}")
+    print(f"[MESH_VERIFY] Warnings: {len(warnings)}")
     
     if errors:
-        print("[MESH_VERIFY] ERRORS:")
-        for err in errors:
-            print(f"[MESH_VERIFY]   ✗ {err}")
-        return False
+        print("\n[MESH_VERIFY] ERRORS (blocking issues):")
+        for i, err in enumerate(errors, 1):
+            print(f"[MESH_VERIFY]   {i}. {err}")
     
     if warnings:
-        print("[MESH_VERIFY] WARNINGS:")
-        for warn in warnings:
-            print(f"[MESH_VERIFY]   ⚠ {warn}")
+        print("\n[MESH_VERIFY] WARNINGS (non-blocking):")
+        for i, warn in enumerate(warnings, 1):
+            print(f"[MESH_VERIFY]   {i}. {warn}")
     
-    print("[MESH_VERIFY] ✓ Mesh is ready for export")
-    return True
-
-
-def ensure_uv_map(obj):
-    """
-    IMPROVED VERSION: Ensure mesh has a UV map.
+    success = len(errors) == 0
     
-    Creates and unwraps if missing.
-    """
-    me = obj.data
-    
-    if not me.uv_layers or len(me.uv_layers) == 0:
-        print("[MESH] Creating UV map...")
-        me.uv_layers.new(name="UVMap")
-        
-        # Unwrap
-        bpy.context.view_layer.objects.active = obj
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
-        bpy.ops.object.mode_set(mode='OBJECT')
-        print("[MESH] ✓ UV map created and unwrapped")
+    if success:
+        print("\n[MESH_VERIFY] ✓✓✓ MESH IS READY FOR BAKING ✓✓✓")
     else:
-        print(f"[MESH] ✓ UV map exists: {me.uv_layers[0].name}")
-
-
-def clean_mesh(obj):
-    """
-    Clean mesh geometry to prevent export issues.
+        print("\n[MESH_VERIFY] ✗✗✗ MESH VERIFICATION FAILED ✗✗✗")
+        print("[MESH_VERIFY]")
+        print("[MESH_VERIFY] Common causes:")
+        print("[MESH_VERIFY]   • Base .blend file is corrupted or empty")
+        print("[MESH_VERIFY]   • Measurements caused invalid mesh deformation")
+        print("[MESH_VERIFY]   • texture.build_projection_material() didn't assign material")
+        print("[MESH_VERIFY]   • UV unwrap failed due to bad geometry")
     
-    Removes:
-    - Degenerate faces (zero area)
-    - Loose vertices
-    - Duplicate vertices
-    - Zero-length edges
-    """
-    print("[MESH] Cleaning mesh geometry...")
+    print("=" * 80 + "\n")
     
-    me = obj.data
-    bpy.context.view_layer.objects.active = obj
-    
-    # Switch to edit mode
-    bpy.ops.object.mode_set(mode='EDIT')
-    bm = bmesh.from_edit_mesh(me)
-    
-    initial_verts = len(bm.verts)
-    initial_faces = len(bm.faces)
-    
-    # Remove degenerate geometry
-    try:
-        bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=1e-4)
-        print("[MESH]   ✓ Dissolved degenerate geometry")
-    except Exception as e:
-        print(f"[MESH]   ⚠ Could not dissolve degenerate: {e}")
-    
-    # Remove duplicate vertices
-    try:
-        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
-        print("[MESH]   ✓ Removed duplicate vertices")
-    except Exception as e:
-        print(f"[MESH]   ⚠ Could not remove doubles: {e}")
-    
-    # Delete loose vertices
-    try:
-        loose_verts = [v for v in bm.verts if not v.link_faces]
-        bmesh.ops.delete(bm, geom=loose_verts, context='VERTS')
-        print(f"[MESH]   ✓ Removed {len(loose_verts)} loose vertices")
-    except Exception as e:
-        print(f"[MESH]   ⚠ Could not remove loose vertices: {e}")
-    
-    bmesh.update_edit_mesh(me)
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    final_verts = len(me.vertices)
-    final_faces = len(me.polygons)
-    
-    print(f"[MESH] Cleaning complete:")
-    print(f"[MESH]   Vertices: {initial_verts} → {final_verts}")
-    print(f"[MESH]   Faces: {initial_faces} → {final_faces}")
-
-
-def diagnose_mesh_issues(obj):
-    """
-    Comprehensive mesh diagnosis for debugging.
-    
-    Returns dict with all mesh properties.
-    """
-    me = obj.data
-    
-    diag = {
-        "name": obj.name,
-        "type": obj.type,
-        "vertices": len(me.vertices),
-        "edges": len(me.edges),
-        "faces": len(me.polygons),
-        "uv_layers": len(me.uv_layers) if me.uv_layers else 0,
-        "materials": len(me.materials),
-        "vertex_groups": len(obj.vertex_groups),
-    }
-    
-    # Check for issues
-    issues = []
-    
-    if diag["vertices"] == 0:
-        issues.append("No vertices")
-    if diag["faces"] == 0:
-        issues.append("No faces")
-    if diag["uv_layers"] == 0:
-        issues.append("No UV layers")
-    if diag["materials"] == 0:
-        issues.append("No materials")
-    
-    # Check degenerate faces
-    degenerate = sum(1 for p in me.polygons if p.area < 1e-6)
-    if degenerate > 0:
-        issues.append(f"{degenerate} degenerate faces")
-    
-    diag["issues"] = issues
-    
-    return diag
-
-
-# Example usage in your main script:
-"""
-# After creating the mesh
-obj = get_main_mesh()
-
-# Clean it first
-clean_mesh(obj)
-
-# Ensure UV map
-ensure_uv_map(obj)
-
-# Verify before export
-if not verify_mesh_ready(obj):
-    # Print diagnostics
-    diag = diagnose_mesh_issues(obj)
-    print(f"Mesh diagnosis: {diag}")
-    sys.exit(1)
-"""
+    return success
