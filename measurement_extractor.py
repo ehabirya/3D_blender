@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-measurement_extractor.py - Extract body measurements from photos
+measurement_extractor.py - ENHANCED with foot measurements
 
-This module extracts real-world body measurements from photos using:
-1. MediaPipe pose landmarks
-2. Camera calibration (distance, angle)
-3. User-provided height as reference scale
-
-Combines photo-extracted measurements with user inputs (user takes priority).
+IMPROVEMENTS:
+- ✅ Added foot_length and foot_width extraction
+- ✅ Compatible with scale calibration in vision.py
+- ✅ Maintains all original measurements (chest, waist, hips, etc.)
+- ✅ Works with existing merge_measurements and validate_measurement_sanity
 """
 
 from typing import Dict, Optional, Tuple
@@ -16,86 +15,42 @@ import math
 
 
 def calculate_3d_distance(point1, point2, img_height: int, img_width: int) -> float:
-    """
-    Calculate pixel distance between two landmark points.
-    
-    Args:
-        point1, point2: MediaPipe landmarks (normalized 0-1 coordinates)
-        img_height, img_width: Image dimensions in pixels
-        
-    Returns:
-        Distance in pixels
-    """
+    """Calculate pixel distance between two landmark points."""
     p1 = np.array([point1.x * img_width, point1.y * img_height, point1.z * img_width])
     p2 = np.array([point2.x * img_width, point2.y * img_height, point2.z * img_width])
     return float(np.linalg.norm(p2 - p1))
 
 
-def pixel_to_meters(pixel_distance: float, reference_height_m: float, 
+def pixel_to_meters(pixel_distance: float, reference_height_m: float,
                     measured_height_px: float) -> float:
-    """
-    Convert pixel measurements to real-world meters.
-    
-    Uses known height as reference scale.
-    
-    Args:
-        pixel_distance: Distance in pixels to convert
-        reference_height_m: User's real height in meters
-        measured_height_px: Measured height in pixels from landmarks
-        
-    Returns:
-        Distance in meters
-    """
+    """Convert pixel measurements to real-world meters."""
     if measured_height_px <= 0:
         return 0.0
-    
-    # pixels_per_meter = measured_height_px / reference_height_m
     meters_per_pixel = reference_height_m / measured_height_px
     return pixel_distance * meters_per_pixel
 
 
-def apply_perspective_correction(measurement_m: float, camera_distance_m: float, 
+def apply_perspective_correction(measurement_m: float, camera_distance_m: float,
                                  angle_deg: float) -> float:
-    """
-    Correct measurement for camera distance and angle.
-    
-    When camera is far, there's less perspective distortion.
-    When camera is tilted, measurements need angular correction.
-    
-    Args:
-        measurement_m: Raw measurement in meters
-        camera_distance_m: Estimated camera distance
-        angle_deg: Camera tilt angle from vertical
-        
-    Returns:
-        Corrected measurement in meters
-    """
-    # Distance correction (closer = more distortion)
-    # Optimal distance is 2-3 meters
+    """Correct measurement for camera distance and angle."""
     if camera_distance_m < 1.5:
-        distance_factor = 1.0 + (1.5 - camera_distance_m) * 0.1  # Up to 10% correction
+        distance_factor = 1.0 + (1.5 - camera_distance_m) * 0.1
     elif camera_distance_m > 3.5:
-        distance_factor = 1.0 - (camera_distance_m - 3.5) * 0.05  # Up to 5% correction
+        distance_factor = 1.0 - (camera_distance_m - 3.5) * 0.05
     else:
         distance_factor = 1.0
     
-    # Angle correction (tilt causes foreshortening)
     angle_rad = math.radians(abs(angle_deg))
     angle_factor = 1.0 / math.cos(angle_rad) if angle_rad < math.radians(30) else 1.0
     
     return measurement_m * distance_factor * angle_factor
 
 
-def extract_shoulder_width(pose_landmarks, img_h: int, img_w: int, 
+def extract_shoulder_width(pose_landmarks, img_h: int, img_w: int,
                            height_m: float, height_px: float,
                            camera_distance: float = 2.5,
                            roll_deg: float = 0.0) -> Optional[float]:
-    """
-    Extract shoulder width from pose landmarks.
-    
-    Returns:
-        Shoulder width in meters, or None if can't calculate
-    """
+    """Extract shoulder width from pose landmarks."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
@@ -103,13 +58,8 @@ def extract_shoulder_width(pose_landmarks, img_h: int, img_w: int,
         left_shoulder = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_SHOULDER]
         
-        # Calculate pixel distance
         shoulder_px = calculate_3d_distance(left_shoulder, right_shoulder, img_h, img_w)
-        
-        # Convert to meters using height reference
         shoulder_m = pixel_to_meters(shoulder_px, height_m, height_px)
-        
-        # Apply perspective correction
         shoulder_m = apply_perspective_correction(shoulder_m, camera_distance, roll_deg)
         
         return shoulder_m
@@ -121,43 +71,25 @@ def extract_shoulder_width(pose_landmarks, img_h: int, img_w: int,
 def extract_chest_circumference(pose_landmarks, img_h: int, img_w: int,
                                 height_m: float, height_px: float,
                                 camera_distance: float = 2.5) -> Optional[float]:
-    """
-    Estimate chest circumference from shoulder and side landmarks.
-    
-    Note: Circumference estimation from front view is approximate.
-    Uses shoulder width and depth estimation.
-    
-    Returns:
-        Estimated chest circumference in meters
-    """
+    """Estimate chest circumference from shoulder and side landmarks."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
         
-        # Get shoulder width
         shoulder_width_m = extract_shoulder_width(pose_landmarks, img_h, img_w,
                                                   height_m, height_px, camera_distance)
         if not shoulder_width_m:
             return None
         
-        # Estimate chest depth from z-coordinates (rough approximation)
         left_shoulder = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_SHOULDER]
         
-        # Average z gives depth estimate (normalized)
         avg_z = (left_shoulder.z + right_shoulder.z) / 2.0
-        
-        # Chest depth is typically 0.5-0.6 of shoulder width
-        # Adjust based on z-coordinate (more negative = more depth visible)
-        depth_ratio = 0.55 + abs(avg_z) * 0.1  # 0.55 to 0.65 typically
+        depth_ratio = 0.55 + abs(avg_z) * 0.1
         chest_depth_m = shoulder_width_m * depth_ratio
         
-        # Circumference approximation: ellipse formula
-        # C ≈ π * (3(a+b) - sqrt((3a+b)(a+3b)))
-        # where a = width/2, b = depth/2
         a = shoulder_width_m / 2.0
         b = chest_depth_m / 2.0
-        
         circumference = math.pi * (3 * (a + b) - math.sqrt((3*a + b) * (a + 3*b)))
         
         return circumference
@@ -169,12 +101,7 @@ def extract_chest_circumference(pose_landmarks, img_h: int, img_w: int,
 def extract_waist_circumference(pose_landmarks, img_h: int, img_w: int,
                                 height_m: float, height_px: float,
                                 camera_distance: float = 2.5) -> Optional[float]:
-    """
-    Estimate waist circumference from hip landmarks.
-    
-    Returns:
-        Estimated waist circumference in meters
-    """
+    """Estimate waist circumference from hip landmarks."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
@@ -182,20 +109,16 @@ def extract_waist_circumference(pose_landmarks, img_h: int, img_w: int,
         left_hip = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP]
         right_hip = pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_HIP]
         
-        # Calculate hip width (proxy for waist)
         hip_width_px = calculate_3d_distance(left_hip, right_hip, img_h, img_w)
         hip_width_m = pixel_to_meters(hip_width_px, height_m, height_px)
         hip_width_m = apply_perspective_correction(hip_width_m, camera_distance, 0)
         
-        # Waist is typically 0.8-0.9 of hip width
         waist_width_m = hip_width_m * 0.85
         
-        # Estimate depth (similar to chest)
         avg_z = (left_hip.z + right_hip.z) / 2.0
         depth_ratio = 0.50 + abs(avg_z) * 0.1
         waist_depth_m = waist_width_m * depth_ratio
         
-        # Circumference
         a = waist_width_m / 2.0
         b = waist_depth_m / 2.0
         circumference = math.pi * (3 * (a + b) - math.sqrt((3*a + b) * (a + 3*b)))
@@ -209,12 +132,7 @@ def extract_waist_circumference(pose_landmarks, img_h: int, img_w: int,
 def extract_hip_circumference(pose_landmarks, img_h: int, img_w: int,
                               height_m: float, height_px: float,
                               camera_distance: float = 2.5) -> Optional[float]:
-    """
-    Estimate hip circumference from hip landmarks.
-    
-    Returns:
-        Estimated hip circumference in meters
-    """
+    """Estimate hip circumference from hip landmarks."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
@@ -226,12 +144,10 @@ def extract_hip_circumference(pose_landmarks, img_h: int, img_w: int,
         hip_width_m = pixel_to_meters(hip_width_px, height_m, height_px)
         hip_width_m = apply_perspective_correction(hip_width_m, camera_distance, 0)
         
-        # Estimate depth
         avg_z = (left_hip.z + right_hip.z) / 2.0
-        depth_ratio = 0.60 + abs(avg_z) * 0.1  # Hips have more depth
+        depth_ratio = 0.60 + abs(avg_z) * 0.1
         hip_depth_m = hip_width_m * depth_ratio
         
-        # Circumference
         a = hip_width_m / 2.0
         b = hip_depth_m / 2.0
         circumference = math.pi * (3 * (a + b) - math.sqrt((3*a + b) * (a + 3*b)))
@@ -245,17 +161,11 @@ def extract_hip_circumference(pose_landmarks, img_h: int, img_w: int,
 def extract_inseam_length(pose_landmarks, img_h: int, img_w: int,
                           height_m: float, height_px: float,
                           camera_distance: float = 2.5) -> Optional[float]:
-    """
-    Extract inseam (crotch to ankle) length.
-    
-    Returns:
-        Inseam length in meters
-    """
+    """Extract inseam (crotch to ankle) length."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
         
-        # Use left leg (average of both would be better with both legs visible)
         left_hip = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP]
         left_ankle = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE]
         
@@ -263,7 +173,6 @@ def extract_inseam_length(pose_landmarks, img_h: int, img_w: int,
         inseam_m = pixel_to_meters(inseam_px, height_m, height_px)
         inseam_m = apply_perspective_correction(inseam_m, camera_distance, 0)
         
-        # Inseam is typically hip to ankle
         return inseam_m
     except Exception as e:
         print(f"[MEASURE] Warning: Could not extract inseam: {e}")
@@ -273,12 +182,7 @@ def extract_inseam_length(pose_landmarks, img_h: int, img_w: int,
 def extract_arm_length(pose_landmarks, img_h: int, img_w: int,
                        height_m: float, height_px: float,
                        camera_distance: float = 2.5) -> Optional[float]:
-    """
-    Extract arm length (shoulder to wrist).
-    
-    Returns:
-        Arm length in meters
-    """
+    """Extract arm length (shoulder to wrist)."""
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
@@ -296,28 +200,89 @@ def extract_arm_length(pose_landmarks, img_h: int, img_w: int,
         return None
 
 
-def measure_body_height_px(pose_landmarks, img_h: int, img_w: int) -> Optional[float]:
+# ====================== NEW: Foot Measurements ======================
+
+def extract_foot_length(pose_landmarks, img_h: int, img_w: int,
+                        height_m: float, height_px: float,
+                        camera_distance: float = 2.5) -> Optional[float]:
     """
-    Measure body height in pixels from pose landmarks.
+    Extract foot length from heel to toe.
     
-    Returns:
-        Height in pixels (top of head to feet)
+    NEW FEATURE: Added for foot measurement support.
     """
     try:
         import mediapipe as mp
         mp_pose = mp.solutions.pose
         
-        # Top: nose or top of head estimate
-        nose = pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
-        top_y = nose.y * img_h - (0.1 * img_h)  # Add ~10% for head top
+        # Use left foot (could average both)
+        left_heel = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HEEL]
+        left_foot_index = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
         
-        # Bottom: average of ankles
+        foot_px = calculate_3d_distance(left_heel, left_foot_index, img_h, img_w)
+        foot_m = pixel_to_meters(foot_px, height_m, height_px)
+        foot_m = apply_perspective_correction(foot_m, camera_distance, 0)
+        
+        return foot_m
+    except Exception as e:
+        print(f"[MEASURE] Warning: Could not extract foot length: {e}")
+        return None
+
+
+def extract_foot_width(pose_landmarks, img_h: int, img_w: int,
+                       height_m: float, height_px: float,
+                       foot_length: Optional[float] = None) -> Optional[float]:
+    """
+    Estimate foot width.
+    
+    NEW FEATURE: Added for foot measurement support.
+    
+    Note: MediaPipe doesn't provide cross-foot landmarks, so we estimate
+    width as approximately 38-40% of foot length (typical human proportion).
+    """
+    try:
+        # If foot length is available, use proportion
+        if foot_length and foot_length > 0:
+            # Typical foot width is 38-40% of foot length
+            foot_width = foot_length * 0.39
+            return foot_width
+        
+        # Alternative: try to estimate from ankle width
+        import mediapipe as mp
+        mp_pose = mp.solutions.pose
+        
+        left_ankle = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE]
+        left_heel = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HEEL]
+        
+        # This is a rough approximation
+        ankle_heel_px = calculate_3d_distance(left_ankle, left_heel, img_h, img_w)
+        ankle_heel_m = pixel_to_meters(ankle_heel_px, height_m, height_px)
+        
+        # Foot width roughly 1.2-1.3x ankle-heel distance
+        foot_width = ankle_heel_m * 1.25
+        
+        return foot_width
+    except Exception as e:
+        print(f"[MEASURE] Warning: Could not extract foot width: {e}")
+        return None
+
+
+# ====================== Main Extraction Function ======================
+
+def measure_body_height_px(pose_landmarks, img_h: int, img_w: int) -> Optional[float]:
+    """Measure body height in pixels from pose landmarks."""
+    try:
+        import mediapipe as mp
+        mp_pose = mp.solutions.pose
+        
+        nose = pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
+        top_y = nose.y * img_h - (0.1 * img_h)
+        
         left_ankle = pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_ANKLE]
         right_ankle = pose_landmarks.landmark[mp_pose.PoseLandmark.RIGHT_ANKLE]
         bottom_y = ((left_ankle.y + right_ankle.y) / 2.0) * img_h
         
         height_px = bottom_y - top_y
-        return max(height_px, 1.0)  # Prevent division by zero
+        return max(height_px, 1.0)
     except Exception as e:
         print(f"[MEASURE] Warning: Could not measure height: {e}")
         return None
@@ -329,6 +294,8 @@ def extract_all_measurements(pose_landmarks, img_h: int, img_w: int,
     """
     Extract all body measurements from pose landmarks.
     
+    ENHANCED: Now includes foot_length and foot_width.
+    
     Args:
         pose_landmarks: MediaPipe pose landmarks
         img_h, img_w: Image dimensions
@@ -338,14 +305,12 @@ def extract_all_measurements(pose_landmarks, img_h: int, img_w: int,
     Returns:
         Dictionary of measurements in meters
     """
-    # Get camera parameters
-    camera_distance = 2.5  # Default
+    camera_distance = 2.5
     roll_deg = 0.0
     if camera_info:
         camera_distance = camera_info.get('distance_m', 2.5)
         roll_deg = camera_info.get('roll_deg', 0.0)
     
-    # Measure height in pixels (for scaling reference)
     height_px = measure_body_height_px(pose_landmarks, img_h, img_w)
     if not height_px or height_px < 10:
         print("[MEASURE] Error: Could not measure body height in image")
@@ -355,6 +320,11 @@ def extract_all_measurements(pose_landmarks, img_h: int, img_w: int,
           f"Measured = {height_px:.0f}px")
     print(f"[MEASURE] Camera: distance = {camera_distance:.2f}m, "
           f"tilt = {roll_deg:.1f}°")
+    
+    # Extract foot length first (needed for width estimation)
+    foot_length = extract_foot_length(pose_landmarks, img_h, img_w,
+                                      user_height_m, height_px,
+                                      camera_distance)
     
     # Extract all measurements
     measurements = {
@@ -376,9 +346,12 @@ def extract_all_measurements(pose_landmarks, img_h: int, img_w: int,
         'arm': extract_arm_length(pose_landmarks, img_h, img_w,
                                   user_height_m, height_px,
                                   camera_distance),
+        'foot_length': foot_length,
+        'foot_width': extract_foot_width(pose_landmarks, img_h, img_w,
+                                        user_height_m, height_px,
+                                        foot_length),
     }
     
-    # Log extracted measurements
     print("[MEASURE] Extracted measurements:")
     for key, value in measurements.items():
         if value:
@@ -391,39 +364,34 @@ def extract_all_measurements(pose_landmarks, img_h: int, img_w: int,
 
 def merge_measurements(photo_measurements: Dict[str, Optional[float]],
                       user_measurements: Dict[str, Optional[float]],
-                      confidence_threshold: float = 0.7) -> Dict[str, float]:
+                      confidence_threshold: float = 0.7) -> Dict[str, Optional[float]]:
     """
     Merge photo-extracted and user-provided measurements.
     
     Priority:
     1. User-provided measurements (always trusted)
     2. Photo-extracted measurements (if confidence is high enough)
-    3. Default/fallback values
+    3. None if neither available
     
-    Args:
-        photo_measurements: Extracted from photos
-        user_measurements: Provided by user (can be None/empty)
-        confidence_threshold: Minimum confidence to use photo measurements
-        
-    Returns:
-        Final merged measurements
+    ENHANCED: Now handles foot_length and foot_width.
     """
     merged = {}
     
-    for key in ['chest', 'waist', 'hips', 'shoulder', 'inseam', 'arm']:
+    # All measurement keys including new foot measurements
+    all_keys = ['chest', 'waist', 'hips', 'shoulder', 'inseam', 'arm',
+                'foot_length', 'foot_width']
+    
+    for key in all_keys:
         user_val = user_measurements.get(key)
         photo_val = photo_measurements.get(key)
         
         if user_val is not None and user_val > 0:
-            # User provided - always use this
             merged[key] = user_val
             print(f"[MEASURE] {key}: Using user input = {user_val:.3f}m")
         elif photo_val is not None and photo_val > 0:
-            # Use photo extraction
             merged[key] = photo_val
             print(f"[MEASURE] {key}: Using photo extraction = {photo_val:.3f}m")
         else:
-            # No data available
             merged[key] = None
             print(f"[MEASURE] {key}: No data available")
     
@@ -435,21 +403,19 @@ def validate_measurement_sanity(measurements: Dict[str, Optional[float]],
     """
     Validate measurements are physically reasonable.
     
-    Filters out clearly wrong measurements based on human proportions.
-    
-    Returns:
-        Validated measurements (invalid ones set to None)
+    ENHANCED: Added validation ranges for foot measurements.
     """
     validated = measurements.copy()
     
-    # Typical human proportions (as ratio of height)
     reasonable_ranges = {
-        'shoulder': (0.20, 0.30),    # 20-30% of height
-        'chest': (0.45, 0.65),       # 45-65% of height
-        'waist': (0.40, 0.60),       # 40-60% of height
-        'hips': (0.45, 0.65),        # 45-65% of height
-        'inseam': (0.40, 0.52),      # 40-52% of height
-        'arm': (0.35, 0.45),         # 35-45% of height
+        'shoulder': (0.20, 0.30),
+        'chest': (0.45, 0.65),
+        'waist': (0.40, 0.60),
+        'hips': (0.45, 0.65),
+        'inseam': (0.40, 0.52),
+        'arm': (0.35, 0.45),
+        'foot_length': (0.12, 0.18),  # NEW: Foot length typically 12-18% of height
+        'foot_width': (0.04, 0.08),   # NEW: Foot width typically 4-8% of height
     }
     
     for key, (min_ratio, max_ratio) in reasonable_ranges.items():
