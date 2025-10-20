@@ -259,7 +259,12 @@ def run_blender_avatar(
             log += "=== STDOUT ===\n" + result.stdout + "\n"
         if result.stderr:
             log += "=== STDERR ===\n" + result.stderr + "\n"
-
+        if result.stderr:
+            print("\n[BLENDER] STDERR (ERRORS/WARNINGS):")
+            print("=" * 80)
+            for line in result.stderr.splitlines():
+                print(f"  {line}", file=sys.stderr)
+            print("=" * 80)
         print(f"[BLENDER] Return code: {result.returncode}")
 
         # Small FS settle helps avoid rare container races
