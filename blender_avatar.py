@@ -2,10 +2,13 @@
 """
 blender_avatar.py - Wrapper for Blender avatar generation
 
+FIXED VERSION with stderr capture for debugging
+
 - Handles base64 photos & data: URIs (chooses proper file extension)
 - Supports single photos AND ranked photo lists (front/side/back)
 - Silences ALSA with SDL_AUDIODRIVER=dummy for headless runs
 - Exports GLB via deform_avatar.py and returns base64 + logs
+- NOW PRINTS STDERR to show actual Python errors from Blender
 """
 
 import os
@@ -162,7 +165,7 @@ def run_blender_avatar(
                     photo_paths[role].append(path)
                     break  # only need one from singles per role if present
 
-    # Ranked lists (base64 strings) — keep up to 2 per role
+    # Ranked lists (base64 strings) – keep up to 2 per role
     if photos_ranked:
         for role in ("front", "side", "back"):
             rank_list = list(_iter_nonempty(photos_ranked.get(role)))
@@ -254,18 +257,43 @@ def run_blender_avatar(
             timeout=timeout,
             check=False,
         )
+        
+        # Build log string
         log = ""
         if result.stdout:
             log += "=== STDOUT ===\n" + result.stdout + "\n"
         if result.stderr:
             log += "=== STDERR ===\n" + result.stderr + "\n"
+
+        print(f"[BLENDER] Return code: {result.returncode}")
+        
+        # CRITICAL FIX: Print stdout to console
+        if result.stdout:
+            print("\n[BLENDER] STDOUT:")
+            print("=" * 80)
+            for line in result.stdout.splitlines():
+                print(f"  {line}")
+            print("=" * 80)
+        
+        # CRITICAL FIX: Print stderr to console (THIS WAS MISSING!)
         if result.stderr:
             print("\n[BLENDER] STDERR (ERRORS/WARNINGS):")
             print("=" * 80)
             for line in result.stderr.splitlines():
                 print(f"  {line}", file=sys.stderr)
             print("=" * 80)
-        print(f"[BLENDER] Return code: {result.returncode}")
+            
+            # Parse for critical errors
+            error_lines = []
+            for line in result.stderr.splitlines():
+                if any(keyword in line.lower() for keyword in 
+                       ['error', 'exception', 'traceback', 'failed', 'fatal', 'mesh verification']):
+                    error_lines.append(line)
+            
+            if error_lines:
+                print("\n[BLENDER] Detected critical errors:")
+                for line in error_lines[:10]:  # First 10 errors
+                    print(f"  ✗ {line}", file=sys.stderr)
 
         # Small FS settle helps avoid rare container races
         time.sleep(0.2)
