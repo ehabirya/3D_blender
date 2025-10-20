@@ -2,19 +2,7 @@
 """
 deform_avatar.py - Main orchestration script for Blender avatar generation
 
-This is the entry point that coordinates:
-1. Mesh preparation and deformation
-2. Texture projection and baking
-3. Pose application (after baking)
-4. GLB export with validation
-
-Pipeline:
-1) Load/prepare mesh and measurements → mesh_deformation.py
-2) Build multi-photo projection material → texture_baking.py
-3) Bake diffuse in neutral pose → texture_baking.py
-4) Save, reload, and pack baked texture → texture_baking.py (CRITICAL for GLB)
-5) Optional pose AFTER bake → mesh_deformation.py
-6) Robust GLB export with verification → export_utils.py
+FIXED: Moved mesh verification to AFTER material creation
 """
 
 import bpy
@@ -52,6 +40,11 @@ parser.add_argument("--hips", type=float, help="Hip circumference in meters")
 parser.add_argument("--shoulder", type=float, help="Shoulder width in meters")
 parser.add_argument("--inseam", type=float, help="Inseam length in meters")
 parser.add_argument("--arm", type=float, help="Arm length in meters")
+parser.add_argument("--neck", type=float, help="Neck circumference in meters")
+parser.add_argument("--head", type=float, help="Head circumference in meters")
+parser.add_argument("--hand", type=float, help="Hand circumference in meters")
+parser.add_argument("--foot_length", type=float, help="Foot length in meters")
+parser.add_argument("--foot_width", type=float, help="Foot width in meters")
 
 # Textures (single photos)
 parser.add_argument("--frontTex", type=str, help="Front photo path")
@@ -137,9 +130,8 @@ mesh.ensure_uv_map(obj)
 
 facemask_attr = mesh.make_facemask_attribute(obj)
 
-if not mesh.verify_mesh_ready(obj):
-    print("[AVATAR] ✗ Mesh verification failed!")
-    sys.exit(1)
+# FIXED: Remove premature verification - we'll verify after material creation
+print("[MESH] ✓ Basic mesh setup complete")
 
 # ==================== STEP 2: TEXTURE PREPARATION ====================
 print("\n" + "=" * 80)
@@ -174,6 +166,11 @@ for role, paths in photos.items():
     print(f"  {role}: {len(paths)}")
 
 mat, nodes = texture.build_projection_material(obj, photos, facemask_attr)
+
+# FIXED: NOW verify mesh after material is created
+if not mesh.verify_mesh_ready(obj):
+    print("[AVATAR] ✗ Mesh verification failed!")
+    sys.exit(1)
 
 # ==================== STEP 3: BAKING ====================
 print("\n" + "=" * 80)
